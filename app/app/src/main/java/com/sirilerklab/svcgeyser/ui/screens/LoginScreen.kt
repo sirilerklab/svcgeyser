@@ -1,6 +1,5 @@
 package com.sirilerklab.svcgeyser.ui.screens
 
-import android.app.Activity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -55,7 +54,8 @@ fun LoginScreen(
         )
 
         when (val status = state.loginStatus) {
-            is LoginStatus.Loading -> CircularProgressIndicator()
+            is LoginStatus.Restoring, is LoginStatus.Loading ->
+                CircularProgressIndicator()
             is LoginStatus.Error -> {
                 Text(
                     text = status.message,
@@ -64,12 +64,12 @@ fun LoginScreen(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(bottom = 16.dp),
                 )
-                Button(onClick = { vm.signIn(context as Activity) }) {
+                Button(onClick = { vm.signIn(context as android.app.Activity) }) {
                     Text(stringResource(R.string.login_sign_in))
                 }
             }
             else -> {
-                Button(onClick = { vm.signIn(context as Activity) }) {
+                Button(onClick = { vm.signIn(context as android.app.Activity) }) {
                     Text(stringResource(R.string.login_sign_in))
                 }
             }

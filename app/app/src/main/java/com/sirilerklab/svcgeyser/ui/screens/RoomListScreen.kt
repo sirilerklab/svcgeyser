@@ -23,13 +23,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Headset
+import androidx.compose.material.icons.filled.HeadsetOff
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +44,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -66,12 +74,12 @@ fun RoomListScreen(
     onDisconnect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val state   by vm.ui.collectAsState()
-    val ctx     = LocalContext.current
+    val state by vm.ui.collectAsState()
+    val ctx = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Which locked room is awaiting a password from the user
     var passwordTarget by remember { mutableStateOf<GroupInfo?>(null) }
+    var showCreateDialog by remember { mutableStateOf(false) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -81,7 +89,6 @@ fun RoomListScreen(
         if (state.inGame) permLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    // Show join errors as a transient snackbar
     LaunchedEffect(state.joinError) {
         state.joinError?.let {
             snackbarHostState.showSnackbar("Failed to join: $it")
@@ -89,17 +96,24 @@ fun RoomListScreen(
         }
     }
 
-    // Launcher for the "Draw over other apps" settings page.
     val overlayPermLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
+        ActivityResultContracts.StartActivityForResult(),
     ) {
-        // Re-check after the user returns from Settings; if granted, enable bubble immediately.
         if (Settings.canDrawOverlays(ctx)) vm.toggleBubble()
     }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            if (state.inGame && state.currentRoom == null) {
+                ExtendedFloatingActionButton(
+                    onClick = { showCreateDialog = true },
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("Create channel") },
+                )
+            }
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -113,7 +127,6 @@ fun RoomListScreen(
                     }
                 },
                 actions = {
-                    // Bubble toggle — 🎙 icon; tinted green when active
                     IconButton(onClick = {
                         if (state.bubbleEnabled) {
                             vm.toggleBubble()
@@ -124,20 +137,17 @@ fun RoomListScreen(
                                 Intent(
                                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                                     Uri.parse("package:${ctx.packageName}"),
-                                )
+                                ),
                             )
                         }
                     }) {
-                        Text(
-                            "🎙",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = if (state.bubbleEnabled)
-                                Color(0xFF4CAF50)
-                            else
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        Icon(
+                            Icons.Filled.Mic,
+                            contentDescription = "Bubble overlay",
+                            tint = if (state.bubbleEnabled) Color(0xFF4CAF50)
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                         )
                     }
-
                     IconButton(onClick = {
                         vm.disconnect()
                         onDisconnect()
@@ -152,62 +162,76 @@ fun RoomListScreen(
             )
         },
     ) { innerPadding ->
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(0.dp),
+                .padding(innerPadding),
         ) {
-            // Active room banner — pinned at the top when in a room
-            if (state.currentRoom != null) {
-                item {
-                    Spacer(Modifier.height(12.dp))
-                    ActiveRoomBanner(
-                        roomName = state.currentRoom!!,
-                        onLeave = { vm.leaveRoom() },
-                    )
-                    Spacer(Modifier.height(16.dp))
-                }
-            } else {
-                item { Spacer(Modifier.height(12.dp)) }
-            }
-
-            // Section header
-            item {
-                Text(
-                    "VOICE CHANNELS",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 4.dp),
+            if (state.inGame) {
+                AudioControlBar(
+                    isMuted = state.isMuted,
+                    isDeafened = state.isDeafened,
+                    speakerOn = state.speakerOn,
+                    onToggleMute = vm::toggleMute,
+                    onToggleDeafen = vm::toggleDeafen,
+                    onToggleSpeaker = vm::toggleSpeaker,
                 )
             }
 
-            if (state.groups.isEmpty()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
+                if (state.currentRoom != null) {
+                    item {
+                        Spacer(Modifier.height(12.dp))
+                        ActiveRoomBanner(
+                            roomName = state.currentRoom!!,
+                            onLeave = { vm.leaveRoom() },
+                        )
+                        Spacer(Modifier.height(16.dp))
+                    }
+                } else {
+                    item { Spacer(Modifier.height(12.dp)) }
+                }
+
                 item {
                     Text(
-                        "No rooms available yet.",
-                        style = MaterialTheme.typography.bodyMedium,
+                        "VOICE CHANNELS",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp),
+                        modifier = Modifier.padding(bottom = 4.dp),
                     )
                 }
-            } else {
-                items(state.groups, key = { it.name }) { group ->
-                    VoiceChannelRow(
-                        group = group,
-                        isCurrentRoom = state.currentRoom == group.name,
-                        canJoin = state.inGame && state.currentRoom == null,
-                        onJoin = {
-                            if (group.hasPassword) passwordTarget = group
-                            else vm.joinRoom(group.name, null)
-                        },
-                        onLeave = { vm.leaveRoom() },
-                    )
-                }
-            }
 
-            item { Spacer(Modifier.height(16.dp)) }
+                if (state.groups.isEmpty()) {
+                    item {
+                        Text(
+                            "No rooms available yet. Create the first channel.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                } else {
+                    items(state.groups, key = { it.name }) { group ->
+                        VoiceChannelRow(
+                            group = group,
+                            isCurrentRoom = state.currentRoom == group.name,
+                            canJoin = state.inGame && state.currentRoom == null,
+                            onJoin = {
+                                if (group.hasPassword) passwordTarget = group
+                                else vm.joinRoom(group.name, null)
+                            },
+                            onLeave = { vm.leaveRoom() },
+                        )
+                    }
+                }
+
+                item { Spacer(Modifier.height(80.dp)) }
+            }
         }
     }
 
@@ -221,9 +245,65 @@ fun RoomListScreen(
             },
         )
     }
+
+    if (showCreateDialog) {
+        CreateChannelDialog(
+            onDismiss = { showCreateDialog = false },
+            onCreate = { name, pw ->
+                vm.joinRoom(name, pw.ifBlank { null })
+                showCreateDialog = false
+            },
+        )
+    }
 }
 
-// ---- Active room banner -------------------------------------------------
+@Composable
+private fun AudioControlBar(
+    isMuted: Boolean,
+    isDeafened: Boolean,
+    speakerOn: Boolean,
+    onToggleMute: () -> Unit,
+    onToggleDeafen: () -> Unit,
+    onToggleSpeaker: () -> Unit,
+) {
+    Surface(
+        tonalElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onToggleMute) {
+                Icon(
+                    if (isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                    contentDescription = "Mute",
+                    tint = if (isMuted) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary,
+                )
+            }
+            IconButton(onClick = onToggleDeafen) {
+                Icon(
+                    if (isDeafened) Icons.Filled.HeadsetOff else Icons.Filled.Headset,
+                    contentDescription = "Deafen",
+                    tint = if (isDeafened) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary,
+                )
+            }
+            IconButton(onClick = onToggleSpeaker) {
+                Icon(
+                    if (speakerOn) Icons.Filled.VolumeUp else Icons.Filled.Phone,
+                    contentDescription = "Speaker",
+                    tint = if (speakerOn) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun ActiveRoomBanner(roomName: String, onLeave: () -> Unit) {
@@ -237,7 +317,6 @@ private fun ActiveRoomBanner(roomName: String, onLeave: () -> Unit) {
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Green "live" dot
             Spacer(
                 Modifier
                     .size(10.dp)
@@ -264,8 +343,6 @@ private fun ActiveRoomBanner(roomName: String, onLeave: () -> Unit) {
         }
     }
 }
-
-// ---- Voice channel row --------------------------------------------------
 
 @Composable
 private fun VoiceChannelRow(
@@ -309,18 +386,12 @@ private fun VoiceChannelRow(
             modifier = Modifier.weight(1f),
         )
         if (isCurrentRoom) {
-            TextButton(onClick = onLeave) {
-                Text("Leave")
-            }
+            TextButton(onClick = onLeave) { Text("Leave") }
         } else {
-            TextButton(onClick = onJoin, enabled = canJoin) {
-                Text("Join")
-            }
+            TextButton(onClick = onJoin, enabled = canJoin) { Text("Join") }
         }
     }
 }
-
-// ---- Password dialog ----------------------------------------------------
 
 @Composable
 private fun PasswordDialog(
@@ -329,7 +400,6 @@ private fun PasswordDialog(
     onJoin: (String) -> Unit,
 ) {
     var password by remember { mutableStateOf("") }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Join $groupName") },
@@ -344,11 +414,50 @@ private fun PasswordDialog(
             )
         },
         confirmButton = {
-            TextButton(
-                onClick = { onJoin(password) },
-                enabled = password.isNotBlank(),
-            ) {
+            TextButton(onClick = { onJoin(password) }, enabled = password.isNotBlank()) {
                 Text("Join")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun CreateChannelDialog(
+    onDismiss: () -> Unit,
+    onCreate: (name: String, password: String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Create channel") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Channel name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password (optional)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onCreate(name.trim(), password) }, enabled = name.isNotBlank()) {
+                Text("Create")
             }
         },
         dismissButton = {

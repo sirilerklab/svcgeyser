@@ -7,9 +7,12 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sirilerklab.svcgeyser.audio.AudioEngine
+import com.sirilerklab.svcgeyser.auth.AuthRepository
 import com.sirilerklab.svcgeyser.auth.LiveOAuthHelper
 import com.sirilerklab.svcgeyser.auth.XboxAuthHelper
 import com.sirilerklab.svcgeyser.auth.XboxSession
+import com.sirilerklab.svcgeyser.data.SavedServer
+import com.sirilerklab.svcgeyser.data.ServerRepository
 import com.sirilerklab.svcgeyser.network.BridgeClient
 import com.sirilerklab.svcgeyser.network.GroupInfo
 import com.sirilerklab.svcgeyser.network.InboundMessage
@@ -19,16 +22,17 @@ import com.sirilerklab.svcgeyser.ui.bubble.BubbleController
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 private const val TAG = "SVCGeyser.VM"
 
-// ---- UI state -----------------------------------------------------------
-
 sealed class LoginStatus {
     object Idle : LoginStatus()
+    object Restoring : LoginStatus()
     object Loading : LoginStatus()
     data class Error(val message: String) : LoginStatus()
     object Done : LoginStatus()
@@ -42,23 +46,31 @@ sealed class ConnectStatus {
 }
 
 data class AppUiState(
-    val loginStatus: LoginStatus = LoginStatus.Idle,
+    val authReady: Boolean = false,
+    val loginStatus: LoginStatus = LoginStatus.Restoring,
     val connectStatus: ConnectStatus = ConnectStatus.Idle,
     val xboxSession: XboxSession? = null,
     val sessionToken: String? = null,
     val inGame: Boolean = false,
     val javaUuid: String? = null,
     val groups: List<GroupInfo> = emptyList(),
-    val currentRoom: String? = null,  // name of the room the user is currently in
-    val joinError: String? = null,    // transient; shown as snackbar then cleared
+    val currentRoom: String? = null,
+    val joinError: String? = null,
     val bubbleEnabled: Boolean = false,
+    val isMuted: Boolean = false,
+    val isDeafened: Boolean = false,
+    val speakerOn: Boolean = false,
 )
-
-// ---- ViewModel ----------------------------------------------------------
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val ctx: Context get() = getApplication()
+
+    private val authRepo = AuthRepository(ctx)
+    private val serverRepo = ServerRepository(ctx)
+
+    val savedServers: StateFlow<List<SavedServer>> = serverRepo.servers
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _ui = MutableStateFlow(AppUiState())
     val ui: StateFlow<AppUiState> = _ui.asStateFlow()
@@ -72,50 +84,109 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var reconnectDelayMs = 1_000L
     private var reconnectJob: Job? = null
     private var connectionGeneration = 0
-
-    // Tracks which room name we sent in the last join_room request
-    // so we can populate currentRoom when join_ok arrives.
     private var pendingJoinName: String? = null
 
     init {
-        // Mirror UI state into BubbleController so BubbleService can observe it.
         viewModelScope.launch {
             ui.collect { state ->
                 BubbleController.groups.value      = state.groups
                 BubbleController.currentRoom.value = state.currentRoom
                 BubbleController.inGame.value      = state.inGame
+                BubbleController.isMuted.value     = state.isMuted
+                BubbleController.isDeafened.value  = state.isDeafened
+                BubbleController.speakerOn.value   = state.speakerOn
             }
         }
-        BubbleController.onJoin  = { name, pw -> joinRoom(name, pw) }
-        BubbleController.onLeave = { leaveRoom() }
+        BubbleController.onJoin       = { name, pw -> joinRoom(name, pw) }
+        BubbleController.onLeave      = { leaveRoom() }
+        BubbleController.onToggleMute = { toggleMute() }
+        BubbleController.onToggleDeafen = { toggleDeafen() }
+        BubbleController.onToggleSpeaker = { toggleSpeaker() }
+
+        restoreSession()
     }
 
-    // ---- Login ----------------------------------------------------------
+    val isLoggedIn: Boolean get() = _ui.value.xboxSession != null
+
+    // ---- Auth -----------------------------------------------------------
+
+    private fun restoreSession() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(loginStatus = LoginStatus.Restoring)
+            try {
+                val stored = authRepo.load()
+                if (stored == null) {
+                    _ui.value = _ui.value.copy(loginStatus = LoginStatus.Idle, authReady = true)
+                    return@launch
+                }
+                val msa = LiveOAuthHelper.refreshAccessToken(stored.refreshToken)
+                val xboxSession = XboxAuthHelper.exchange(msa.accessToken)
+                authRepo.save(msa.refreshToken, xboxSession.xuid, msa.expiresAtMs())
+                _ui.value = _ui.value.copy(
+                    loginStatus = LoginStatus.Done,
+                    xboxSession = xboxSession,
+                    authReady = true,
+                )
+                Log.d(TAG, "restoreSession: success — XUID=${xboxSession.xuid}")
+            } catch (e: Exception) {
+                Log.w(TAG, "restoreSession: failed — ${e.message}")
+                authRepo.clear()
+                _ui.value = _ui.value.copy(loginStatus = LoginStatus.Idle, authReady = true)
+            }
+        }
+    }
 
     fun signIn(activity: Activity) {
         if (_ui.value.loginStatus == LoginStatus.Loading) return
         _ui.value = _ui.value.copy(loginStatus = LoginStatus.Loading)
         viewModelScope.launch {
             try {
-                Log.d(TAG, "signIn: starting OAuth flow")
-                val msaToken = LiveOAuthHelper.signIn(activity)
-                Log.d(TAG, "signIn: got MSA token, starting Xbox exchange")
-                val xboxSession = XboxAuthHelper.exchange(msaToken)
-                Log.d(TAG, "signIn: success — XUID=${xboxSession.xuid}")
+                val msa = LiveOAuthHelper.signIn(activity)
+                val xboxSession = XboxAuthHelper.exchange(msa.accessToken)
+                authRepo.save(msa.refreshToken, xboxSession.xuid, msa.expiresAtMs())
                 _ui.value = _ui.value.copy(
                     loginStatus = LoginStatus.Done,
                     xboxSession = xboxSession,
+                    authReady = true,
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "signIn: FAILED — ${e.message}", e)
                 _ui.value = _ui.value.copy(
                     loginStatus = LoginStatus.Error(e.message ?: "Sign-in failed"),
+                    authReady = true,
                 )
             }
         }
     }
 
-    // ---- Server connect + auth ------------------------------------------
+    fun signOut() {
+        disconnect()
+        authRepo.clear()
+        _ui.value = AppUiState(authReady = true, loginStatus = LoginStatus.Idle)
+    }
+
+    // ---- Server CRUD ----------------------------------------------------
+
+    fun addServer(label: String, host: String, port: Int) {
+        viewModelScope.launch { serverRepo.add(label, host, port) }
+    }
+
+    fun updateServer(server: SavedServer) {
+        viewModelScope.launch { serverRepo.update(server) }
+    }
+
+    fun deleteServer(id: String) {
+        viewModelScope.launch { serverRepo.delete(id) }
+    }
+
+    fun connectToSaved(server: SavedServer) {
+        viewModelScope.launch {
+            serverRepo.markLastUsed(server.id)
+            connect(server.host, server.port)
+        }
+    }
+
+    // ---- Server connect -------------------------------------------------
 
     fun connect(address: String, port: Int) {
         val session = _ui.value.xboxSession ?: run {
@@ -131,8 +202,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnect() {
-        Log.d(TAG, "disconnect: user requested explicit disconnect")
-        connectionGeneration++ // prevent any pending scheduleReconnect from firing
+        connectionGeneration++
         reconnectJob?.cancel()
         messageJob?.cancel()
         stopAudioEngine()
@@ -148,6 +218,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             currentRoom = null,
             joinError = null,
             bubbleEnabled = false,
+            isMuted = false,
+            isDeafened = false,
+            speakerOn = false,
         )
     }
 
@@ -157,8 +230,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         bridgeClient?.close()
 
         _ui.value = _ui.value.copy(connectStatus = ConnectStatus.Connecting)
-        Log.d(TAG, "doConnect: gen=$gen target=${lastAddress}:${lastPort}")
-
         val client = BridgeClient().also { bridgeClient = it }
         client.connect(lastAddress ?: return, lastPort, session.authHeader)
 
@@ -166,25 +237,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             for (msg in client.messages) {
                 when (msg) {
                     is InboundMessage.AuthOk -> {
-                        Log.d(TAG, "auth_ok — xuid=${msg.xuid} token=${msg.sessionToken.take(8)}…")
-                        reconnectDelayMs = 1_000L // reset backoff on successful auth
+                        reconnectDelayMs = 1_000L
                         _ui.value = _ui.value.copy(
                             connectStatus = ConnectStatus.Connected,
                             sessionToken = msg.sessionToken,
                         )
-                        VoiceService.startConnected(ctx) // keep process alive in background
+                        VoiceService.startConnected(ctx)
                         client.sendStatus()
                     }
                     is InboundMessage.AuthFail -> {
-                        Log.w(TAG, "auth_fail — reason=${msg.reason}")
                         _ui.value = _ui.value.copy(
                             connectStatus = ConnectStatus.Error("Auth failed: ${msg.reason}"),
                         )
                         client.close()
-                        VoiceService.stop(ctx) // don't reconnect on auth failure
+                        VoiceService.stop(ctx)
                     }
                     is InboundMessage.Status -> {
-                        Log.d(TAG, "status — inGame=${msg.inGame} javaUuid=${msg.javaUuid} groups=${msg.groups.size}")
                         _ui.value = _ui.value.copy(
                             inGame = msg.inGame,
                             javaUuid = msg.javaUuid,
@@ -192,52 +260,51 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     is InboundMessage.PlayerJoinedGame -> {
-                        Log.d(TAG, "player_joined_game — javaUuid=${msg.javaUuid}")
                         _ui.value = _ui.value.copy(inGame = true, javaUuid = msg.javaUuid)
+                        client.sendStatus()
                     }
                     is InboundMessage.PlayerLeftGame -> {
-                        Log.d(TAG, "player_left_game — stopping audio")
                         _ui.value = _ui.value.copy(
                             inGame = false,
                             javaUuid = null,
                             currentRoom = null,
                         )
                         stopAudioEngine()
-                        VoiceService.startConnected(ctx) // downgrade notification
+                        VoiceService.startConnected(ctx)
                     }
                     is InboundMessage.GroupUpdate -> {
-                        Log.d(TAG, "group_update — ${msg.groups.size} groups: ${msg.groups.map { it.name }}")
-                        _ui.value = _ui.value.copy(groups = msg.groups)
+                        val keptRoom = _ui.value.currentRoom?.takeIf { room ->
+                            msg.groups.any { it.name == room }
+                        }
+                        _ui.value = _ui.value.copy(groups = msg.groups, currentRoom = keptRoom)
+                    }
+                    is InboundMessage.RoomChanged -> {
+                        pendingJoinName = null
+                        _ui.value = _ui.value.copy(currentRoom = msg.room)
                     }
                     is InboundMessage.JoinOk -> {
-                        Log.d(TAG, "join_ok — room=${pendingJoinName}")
                         _ui.value = _ui.value.copy(currentRoom = pendingJoinName)
                         pendingJoinName = null
                     }
                     is InboundMessage.JoinFail -> {
-                        Log.w(TAG, "join_fail — reason=${msg.reason}")
                         _ui.value = _ui.value.copy(joinError = msg.reason)
                         pendingJoinName = null
                     }
                     is InboundMessage.LeaveOk -> {
-                        Log.d(TAG, "leave_ok")
                         _ui.value = _ui.value.copy(currentRoom = null)
                     }
                     is InboundMessage.DownlinkFrame -> {
                         audioEngine?.handleDownlinkFrame(msg.bytes)
                     }
                     is InboundMessage.Error -> {
-                        Log.e(TAG, "connection error — ${msg.cause.message}", msg.cause)
                         stopAudioEngine()
                         _ui.value = _ui.value.copy(
                             connectStatus = ConnectStatus.Error(msg.cause.message ?: "Connection error"),
                             currentRoom = null,
                         )
-                        // Keep VoiceService running so process stays alive during reconnect.
                         if (connectionGeneration == gen) scheduleReconnect()
                     }
                     is InboundMessage.Closed -> {
-                        Log.d(TAG, "connection closed")
                         stopAudioEngine()
                         _ui.value = _ui.value.copy(
                             connectStatus = ConnectStatus.Idle,
@@ -256,7 +323,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun scheduleReconnect() {
         val session = _ui.value.xboxSession ?: return
-        Log.d(TAG, "scheduleReconnect: retrying in ${reconnectDelayMs}ms")
         reconnectJob?.cancel()
         reconnectJob = viewModelScope.launch {
             delay(reconnectDelayMs)
@@ -269,15 +335,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startAudio() {
         if (audioEngine != null) return
-        audioEngine = AudioEngine { frame -> bridgeClient?.sendBinary(frame) }.also { it.start() }
-        VoiceService.startVoice(ctx) // upgrade notification to "voice active"
+        val state = _ui.value
+        audioEngine = AudioEngine(ctx) { frame -> bridgeClient?.sendBinary(frame) }.also { engine ->
+            engine.isMuted = state.isMuted
+            engine.isDeafened = state.isDeafened
+            engine.speakerOn = state.speakerOn
+            engine.start()
+        }
+        VoiceService.startVoice(ctx)
     }
 
     private fun stopAudioEngine() {
         audioEngine?.stop()
         audioEngine = null
-        // Do NOT stop VoiceService here — it keeps the process alive.
-        // Caller is responsible for deciding whether to stop or downgrade the service.
+    }
+
+    fun toggleMute() {
+        val next = !_ui.value.isMuted
+        audioEngine?.isMuted = next
+        _ui.value = _ui.value.copy(isMuted = next)
+    }
+
+    fun toggleDeafen() {
+        val next = !_ui.value.isDeafened
+        audioEngine?.isDeafened = next
+        _ui.value = _ui.value.copy(isDeafened = next)
+    }
+
+    fun toggleSpeaker() {
+        val next = !_ui.value.speakerOn
+        audioEngine?.applySpeakerRoute(next)
+        _ui.value = _ui.value.copy(speakerOn = next)
     }
 
     // ---- Room actions ---------------------------------------------------
@@ -307,11 +395,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ---- Lifecycle ------------------------------------------------------
-
     override fun onCleared() {
-        BubbleController.onJoin  = null
+        BubbleController.onJoin = null
         BubbleController.onLeave = null
+        BubbleController.onToggleMute = null
+        BubbleController.onToggleDeafen = null
+        BubbleController.onToggleSpeaker = null
         connectionGeneration++
         reconnectJob?.cancel()
         messageJob?.cancel()

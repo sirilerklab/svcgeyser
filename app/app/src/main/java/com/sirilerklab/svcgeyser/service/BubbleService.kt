@@ -1,6 +1,7 @@
 package com.sirilerklab.svcgeyser.service
 
-import android.app.PendingIntent
+import android.animation.ObjectAnimator
+import android.animation.PropertyValuesHolder
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -12,14 +13,11 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
-import androidx.core.content.ContextCompat
-import com.sirilerklab.svcgeyser.MainActivity
-import com.sirilerklab.svcgeyser.network.GroupInfo
 import com.sirilerklab.svcgeyser.ui.bubble.BubbleController
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -33,34 +31,35 @@ class BubbleService : Service() {
         fun start(ctx: Context) = ctx.startService(Intent(ctx, BubbleService::class.java))
         fun stop(ctx: Context)  = ctx.stopService(Intent(ctx, BubbleService::class.java))
 
-        // Material 3 light theme palette (hardcoded for use outside a themed Context)
-        val COL_PURPLE           = 0xFF6650A4.toInt()
-        val COL_GREEN            = 0xFF4CAF50.toInt()
-        val COL_SURFACE          = 0xFFFFFBFE.toInt()
-        val COL_ON_SURFACE       = 0xFF1C1B1F.toInt()
-        val COL_MUTED            = 0xFF49454F.toInt()
-        val COL_DIVIDER          = 0xFFE7E0EC.toInt()
-        val COL_TONAL_CONTAINER  = 0xFFEADDFF.toInt()
-        val COL_TONAL_ON         = 0xFF21005D.toInt()
-        val COL_ERROR            = 0xFFB3261E.toInt()
+        private const val PREFS = "bubble_prefs"
+        private const val KEY_X = "pos_x"
+        private const val KEY_Y = "pos_y"
+
+        val COL_PURPLE = 0xFF6650A4.toInt()
+        val COL_GREEN  = 0xFF4CAF50.toInt()
+        val COL_RED    = 0xFFB3261E.toInt()
+        val COL_SURFACE = 0xFFFFFBFE.toInt()
+        val COL_ON_SURFACE = 0xFF1C1B1F.toInt()
+        val COL_MUTED = 0xFF49454F.toInt()
     }
 
     private val scope = MainScope()
     private var wm: WindowManager? = null
     private var root: FrameLayout? = null
-    private var bubbleBtn: TextView? = null
-    private var card: LinearLayout? = null
-    private var groupList: LinearLayout? = null
-    private var statusLabel: TextView? = null
+    private var bubbleBtn: ImageView? = null
+    private var pill: LinearLayout? = null
+    private var roomLabel: TextView? = null
+    private var statusDot: View? = null
+    private var leaveBtn: TextView? = null
     private lateinit var params: WindowManager.LayoutParams
     private var expanded = false
+    private var pulseAnimator: ObjectAnimator? = null
 
-    // Drag state — use rawX/rawY (screen coords) to avoid coordinate shift when window moves
-    private var dragInitWinX = 0; private var dragInitWinY = 0
-    private var dragInitTouchX = 0f; private var dragInitTouchY = 0f
+    private var dragInitWinX = 0
+    private var dragInitWinY = 0
+    private var dragInitTouchX = 0f
+    private var dragInitTouchY = 0f
     private var hasMoved = false
-
-    // ---- Lifecycle -------------------------------------------------------
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_NOT_STICKY
 
@@ -71,38 +70,42 @@ class BubbleService : Service() {
     }
 
     override fun onDestroy() {
+        pulseAnimator?.cancel()
         scope.cancel()
+        savePosition()
         root?.let { runCatching { wm?.removeView(it) } }
         root = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // ---- Window setup ----------------------------------------------------
-
     private fun buildWindow() {
         val dm = resources.displayMetrics
         val dp = dm.density
+        val circleSize = (40 * dp).toInt()
 
         root = FrameLayout(this)
 
-        // -- Collapsed bubble (circle) --
-        val circleSize = (56 * dp).toInt()
-        bubbleBtn = TextView(this).apply {
-            text = "🎙"
-            textSize = 22f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+        bubbleBtn = ImageView(this).apply {
+            setImageResource(android.R.drawable.ic_btn_speak_now)
+            setColorFilter(Color.WHITE)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding((8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
             background = circle(COL_PURPLE)
+            elevation = 4 * dp
             layoutParams = FrameLayout.LayoutParams(circleSize, circleSize)
         }
 
-        // -- Expanded card --
-        card = buildCard(dp)
-        card!!.visibility = View.GONE
+        pill = buildPill(dp)
+        pill!!.visibility = View.GONE
+        pill!!.alpha = 0f
 
         root!!.addView(bubbleBtn)
-        root!!.addView(card)
+        root!!.addView(pill)
+
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val defaultX = dm.widthPixels - (56 * dp).toInt()
+        val defaultY = (200 * dp).toInt()
 
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -111,94 +114,81 @@ class BubbleService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity  = Gravity.TOP or Gravity.LEFT
-            x        = dm.widthPixels - (72 * dp).toInt()
-            y        = (200 * dp).toInt()
+            gravity = Gravity.TOP or Gravity.START
+            x = prefs.getInt(KEY_X, defaultX)
+            y = prefs.getInt(KEY_Y, defaultY)
         }
 
         wm!!.addView(root, params)
         attachCollapsedTouchHandler()
     }
 
-    private fun buildCard(dp: Float): LinearLayout {
-        val pad = (12 * dp).toInt()
-        val w   = (240 * dp).toInt()
+    private fun buildPill(dp: Float): LinearLayout {
+        val hPad = (10 * dp).toInt()
+        val vPad = (6 * dp).toInt()
 
         return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background  = roundRect(COL_SURFACE, 12 * dp)
-            elevation   = 8 * dp
-            layoutParams = FrameLayout.LayoutParams(w, FrameLayout.LayoutParams.WRAP_CONTENT)
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundRect(COL_SURFACE, 22 * dp)
+            elevation = 6 * dp
+            setPadding(hPad, vPad, hPad, vPad)
+            layoutParams = FrameLayout.LayoutParams(
+                (220 * dp).toInt(),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            )
 
-            // Title row
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(pad, (8 * dp).toInt(), (4 * dp).toInt(), 0)
-
-                addView(TextView(context).apply {
-                    text = "SVCGeyser"
-                    textSize = 14f
-                    setTypeface(typeface, android.graphics.Typeface.BOLD)
-                    setTextColor(COL_ON_SURFACE)
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                })
-
-                addView(Button(context).apply {
-                    text = "✕"
-                    textSize = 16f
-                    setTextColor(COL_MUTED)
-                    background = null
-                    setPadding(pad, 0, pad, 0)
-                    setOnClickListener { collapse() }
-                })
-            })
-
-            // Status
-            statusLabel = TextView(context).apply {
-                textSize = 11f
-                setTextColor(COL_MUTED)
-                setPadding(pad, (4 * dp).toInt(), pad, (8 * dp).toInt())
+            statusDot = View(context).apply {
+                background = circle(COL_MUTED)
+                layoutParams = LinearLayout.LayoutParams((8 * dp).toInt(), (8 * dp).toInt()).apply {
+                    rightMargin = (6 * dp).toInt()
+                }
             }
-            addView(statusLabel)
+            addView(statusDot)
 
-            // Divider
-            addView(View(context).apply {
-                setBackgroundColor(COL_DIVIDER)
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
-            })
-
-            // Section header
-            addView(TextView(context).apply {
-                text = "VOICE CHANNELS"
-                textSize = 10f
-                setTextColor(COL_MUTED)
-                setPadding(pad, (8 * dp).toInt(), pad, (2 * dp).toInt())
-            })
-
-            // Scrollable group list
-            groupList = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
+            roomLabel = TextView(context).apply {
+                text = "Not in channel"
+                textSize = 12f
+                setTextColor(COL_ON_SURFACE)
+                maxLines = 1
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
-            addView(ScrollView(context).apply {
-                isVerticalScrollBarEnabled = false
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    (200 * dp).toInt(),
-                )
-                addView(groupList)
-            })
+            addView(roomLabel)
+
+            addView(iconBtn("M", dp) { BubbleController.onToggleMute?.invoke() })
+            addView(iconBtn("D", dp) { BubbleController.onToggleDeafen?.invoke() })
+            leaveBtn = iconBtn("L", dp) {
+                BubbleController.onLeave?.invoke()
+                collapse()
+            }
+            addView(leaveBtn)
+            addView(iconBtn("✕", dp) { collapse() })
         }
     }
 
-    // ---- Touch: drag (collapsed) ----------------------------------------
+    private fun iconBtn(label: String, dp: Float, onClick: () -> Unit): TextView {
+        return TextView(this).apply {
+            text = label
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setTextColor(COL_PURPLE)
+            val size = (28 * dp).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                leftMargin = (2 * dp).toInt()
+            }
+            setOnClickListener { onClick() }
+        }
+    }
 
     private fun attachCollapsedTouchHandler() {
         root!!.setOnTouchListener { _, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    dragInitWinX   = params.x; dragInitWinY   = params.y
-                    dragInitTouchX = e.rawX;   dragInitTouchY = e.rawY
-                    hasMoved       = false
+                    dragInitWinX = params.x
+                    dragInitWinY = params.y
+                    dragInitTouchX = e.rawX
+                    dragInitTouchY = e.rawY
+                    hasMoved = false
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -213,7 +203,7 @@ class BubbleService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (!hasMoved) expand()
+                    if (!hasMoved) expand() else savePosition()
                     true
                 }
                 else -> false
@@ -221,155 +211,111 @@ class BubbleService : Service() {
         }
     }
 
-    // ---- Expand / collapse -----------------------------------------------
-
     private fun expand() {
         expanded = true
-        root!!.setOnTouchListener(null) // let card buttons receive clicks
-        bubbleBtn!!.visibility = View.GONE
-        card!!.visibility      = View.VISIBLE
-
-        // Snap card to top-right corner so it's always visible
-        val dm  = resources.displayMetrics
-        val dp  = dm.density
-        params.x = dm.widthPixels - (240 * dp).toInt() - (12 * dp).toInt()
-        params.y = (80 * dp).toInt()
-        wm?.updateViewLayout(root, params)
+        root!!.setOnTouchListener(null)
+        bubbleBtn!!.animate().scaleX(0f).scaleY(0f).alpha(0f).setDuration(150).withEndAction {
+            bubbleBtn!!.visibility = View.GONE
+        }.start()
+        pill!!.visibility = View.VISIBLE
+        pill!!.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200)
+            .setInterpolator(AccelerateDecelerateInterpolator()).start()
     }
 
     private fun collapse() {
         expanded = false
-        card!!.visibility      = View.GONE
-        bubbleBtn!!.visibility = View.VISIBLE
-        attachCollapsedTouchHandler()
+        pill!!.animate().scaleX(0.8f).scaleY(0.8f).alpha(0f).setDuration(150).withEndAction {
+            pill!!.visibility = View.GONE
+            bubbleBtn!!.visibility = View.VISIBLE
+            bubbleBtn!!.scaleX = 1f
+            bubbleBtn!!.scaleY = 1f
+            bubbleBtn!!.alpha = 1f
+            attachCollapsedTouchHandler()
+        }.start()
+        savePosition()
     }
-
-    // ---- State observation -----------------------------------------------
 
     private fun observe() {
         scope.launch {
             combine(
-                BubbleController.groups,
                 BubbleController.currentRoom,
                 BubbleController.inGame,
-            ) { g, r, i -> Triple(g, r, i) }.collect { (groups, currentRoom, inGame) ->
-                refreshUI(groups, currentRoom, inGame)
+                BubbleController.isMuted,
+                BubbleController.isDeafened,
+            ) { room, inGame, muted, _ ->
+                Quad(room, inGame, muted)
+            }.collect { (room, inGame, muted) ->
+                refreshUI(room, inGame, muted)
             }
         }
     }
 
-    private fun refreshUI(groups: List<GroupInfo>, currentRoom: String?, inGame: Boolean) {
-        val dp = resources.displayMetrics.density
+    private data class Quad<A, B, C>(val a: A, val b: B, val c: C)
 
-        // Bubble color
-        bubbleBtn?.background = circle(if (currentRoom != null) COL_GREEN else COL_PURPLE)
-
-        // Status text
-        statusLabel?.text = when {
-            currentRoom != null -> "🔊 $currentRoom"
-            inGame              -> "In game — choose a room"
-            else                -> "Waiting for Bedrock player…"
+    private fun refreshUI(currentRoom: String?, inGame: Boolean, isMuted: Boolean) {
+        val color = when {
+            isMuted -> COL_RED
+            currentRoom != null -> COL_GREEN
+            else -> COL_PURPLE
         }
+        bubbleBtn?.background = circle(color)
 
-        // Rebuild group rows
-        val layout = groupList ?: return
-        layout.removeAllViews()
+        statusDot?.background = circle(color)
+        roomLabel?.text = when {
+            currentRoom != null -> currentRoom
+            inGame -> "Not in channel"
+            else -> "Waiting…"
+        }
+        leaveBtn?.visibility = if (currentRoom != null) View.VISIBLE else View.GONE
 
-        if (groups.isEmpty()) {
-            layout.addView(emptyLabel(dp))
+        // Pulse when in-room and unmuted
+        if (currentRoom != null && !isMuted && !expanded) {
+            startPulse()
         } else {
-            groups.forEach { g -> layout.addView(groupRow(g, currentRoom, inGame, dp)) }
+            stopPulse()
         }
     }
 
-    private fun emptyLabel(dp: Float): TextView = TextView(this).apply {
-        text = "No rooms available."
-        textSize = 12f
-        setTextColor(COL_MUTED)
-        val p = (12 * dp).toInt()
-        setPadding(p, p, p, p)
-    }
-
-    private fun groupRow(group: GroupInfo, currentRoom: String?, inGame: Boolean, dp: Float): View {
-        val isCurrent = currentRoom == group.name
-        val hPad      = (12 * dp).toInt()
-        val vPad      = (5 * dp).toInt()
-
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(hPad, vPad, (4 * dp).toInt(), vPad)
-            if (isCurrent) background = rect(COL_TONAL_CONTAINER)
-
-            // Icon
-            addView(TextView(context).apply {
-                text = if (group.hasPassword) "🔒" else "🔊"
-                textSize = 13f
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                ).apply { rightMargin = (8 * dp).toInt() }
-            })
-
-            // Name
-            addView(TextView(context).apply {
-                text = group.name
-                textSize = 13f
-                setTextColor(if (isCurrent) COL_TONAL_ON else COL_ON_SURFACE)
-                if (isCurrent) setTypeface(typeface, android.graphics.Typeface.BOLD)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            })
-
-            // Action button
-            addView(Button(context).apply {
-                val p = (4 * dp).toInt()
-                setPadding(p, 0, p, 0)
-                background = null
-
-                if (isCurrent) {
-                    text = "Leave"
-                    setTextColor(COL_ERROR)
-                    setOnClickListener {
-                        BubbleController.onLeave?.invoke()
-                        collapse()
-                    }
-                } else if (group.hasPassword) {
-                    // Locked rooms: bring app to foreground for password entry
-                    text = "Open"
-                    setTextColor(COL_PURPLE)
-                    isEnabled = inGame && currentRoom == null
-                    alpha = if (isEnabled) 1f else 0.4f
-                    setOnClickListener {
-                        startActivity(Intent(applicationContext, MainActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NEW_TASK
-                        })
-                        collapse()
-                    }
-                } else {
-                    text = "Join"
-                    setTextColor(COL_PURPLE)
-                    isEnabled = inGame && currentRoom == null
-                    alpha = if (isEnabled) 1f else 0.4f
-                    setOnClickListener {
-                        BubbleController.onJoin?.invoke(group.name, null)
-                        collapse()
-                    }
-                }
-            })
+    private fun startPulse() {
+        if (pulseAnimator?.isRunning == true) return
+        bubbleBtn?.let { btn ->
+            pulseAnimator = ObjectAnimator.ofPropertyValuesHolder(
+                btn,
+                PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.08f, 1f),
+                PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.08f, 1f),
+                PropertyValuesHolder.ofFloat(View.ALPHA, 1f, 0.85f, 1f),
+            ).apply {
+                duration = 1500
+                repeatCount = ObjectAnimator.INFINITE
+                interpolator = AccelerateDecelerateInterpolator()
+                start()
+            }
         }
     }
 
-    // ---- Drawable helpers ------------------------------------------------
+    private fun stopPulse() {
+        pulseAnimator?.cancel()
+        pulseAnimator = null
+        bubbleBtn?.scaleX = 1f
+        bubbleBtn?.scaleY = 1f
+        bubbleBtn?.alpha = 1f
+    }
+
+    private fun savePosition() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putInt(KEY_X, params.x)
+            .putInt(KEY_Y, params.y)
+            .apply()
+    }
 
     private fun circle(color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL; setColor(color)
+        shape = GradientDrawable.OVAL
+        setColor(color)
     }
 
     private fun roundRect(color: Int, radius: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE; setColor(color); cornerRadius = radius
+        shape = GradientDrawable.RECTANGLE
+        setColor(color)
+        cornerRadius = radius
     }
-
-    private fun rect(color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE; setColor(color)
-    }
-
 }

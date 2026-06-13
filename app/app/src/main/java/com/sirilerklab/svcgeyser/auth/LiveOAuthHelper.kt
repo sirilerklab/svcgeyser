@@ -26,6 +26,14 @@ private const val TOKEN_URL    = "https://login.live.com/oauth20_token.srf"
 private const val SCOPES       = "XboxLive.signin offline_access"
 private const val AUTH_TIMEOUT = 5 * 60 * 1_000L
 
+data class MsaTokens(
+    val accessToken: String,
+    val refreshToken: String,
+    val expiresInSec: Long,
+) {
+    fun expiresAtMs(): Long = System.currentTimeMillis() + expiresInSec * 1_000L
+}
+
 object LiveOAuthHelper {
 
     private val http = OkHttpClient.Builder()
@@ -33,7 +41,7 @@ object LiveOAuthHelper {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
-    suspend fun signIn(activity: Activity): String {
+    suspend fun signIn(activity: Activity): MsaTokens {
         val verifier  = generateCodeVerifier()
         val challenge = generateCodeChallenge(verifier)
 
@@ -60,12 +68,35 @@ object LiveOAuthHelper {
             ?: throw Exception("Sign-in was cancelled or denied.")
 
         Log.d(TAG, "Auth code received (${code.take(8)}…), exchanging for token…")
-
-        // Must run on IO — blocking OkHttp call.
         return withContext(Dispatchers.IO) { exchangeCode(code, verifier) }
     }
 
-    private fun exchangeCode(code: String, verifier: String): String {
+    suspend fun refreshAccessToken(refreshToken: String): MsaTokens =
+        withContext(Dispatchers.IO) {
+            val body = FormBody.Builder()
+                .add("grant_type",    "refresh_token")
+                .add("client_id",    CLIENT_ID)
+                .add("refresh_token", refreshToken)
+                .add("scope",        SCOPES)
+                .build()
+
+            Log.d(TAG, "POST $TOKEN_URL (refresh)")
+            val response = http.newCall(
+                Request.Builder().url(TOKEN_URL).post(body).build()
+            ).execute()
+
+            val responseBody = response.body?.string() ?: ""
+            Log.d(TAG, "Refresh endpoint → HTTP ${response.code}")
+
+            if (!response.isSuccessful) {
+                Log.e(TAG, "Token refresh failed — body: $responseBody")
+                throw Exception("Token refresh failed: HTTP ${response.code}")
+            }
+
+            parseTokenResponse(responseBody)
+        }
+
+    private fun exchangeCode(code: String, verifier: String): MsaTokens {
         val body = FormBody.Builder()
             .add("grant_type",    "authorization_code")
             .add("client_id",    CLIENT_ID)
@@ -88,11 +119,20 @@ object LiveOAuthHelper {
             throw Exception("Token exchange failed: HTTP ${response.code} — $responseBody")
         }
 
-        Log.d(TAG, "Token exchange OK — got access_token")
-        return JSONObject(responseBody).getString("access_token")
+        Log.d(TAG, "Token exchange OK")
+        return parseTokenResponse(responseBody)
     }
 
-    // ---- PKCE -----------------------------------------------------------
+    private fun parseTokenResponse(responseBody: String): MsaTokens {
+        val json = JSONObject(responseBody)
+        val refresh = json.optString("refresh_token", "")
+        if (refresh.isBlank()) throw Exception("No refresh_token in response")
+        return MsaTokens(
+            accessToken = json.getString("access_token"),
+            refreshToken = refresh,
+            expiresInSec = json.optLong("expires_in", 3600L),
+        )
+    }
 
     private fun generateCodeVerifier(): String {
         val bytes = ByteArray(32)

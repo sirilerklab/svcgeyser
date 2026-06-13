@@ -9,6 +9,8 @@ import de.maxhenkel.voicechat.api.events.LeaveGroupEvent;
 import de.maxhenkel.voicechat.api.events.RemoveGroupEvent;
 import de.maxhenkel.voicechat.api.events.VoicechatServerStartedEvent;
 
+import java.util.UUID;
+
 public class SvcGeyserVoicePlugin implements VoicechatPlugin {
 
     @Override
@@ -32,23 +34,36 @@ public class SvcGeyserVoicePlugin implements VoicechatPlugin {
         Main.getInstance().onSvcApiAcquired(event.getVoicechat());
     }
 
-    // Push a group_update broadcast on every group lifecycle change.
     private void onGroupCreate(CreateGroupEvent event) {
-        Main.getInstance().getBridgeServer().broadcastGroupUpdate();
+        Main.getInstance().getBridgeServer().scheduleBroadcastGroupUpdate();
     }
 
     private void onGroupJoin(JoinGroupEvent event) {
-        Main.getInstance().getBridgeServer().broadcastGroupUpdate();
+        var conn = event.getConnection();
+        if (conn != null && conn.getPlayer() != null) {
+            UUID uuid = conn.getPlayer().getUuid();
+            String room = event.getGroup() != null ? event.getGroup().getName() : null;
+            if (room != null) {
+                Main.getInstance().getBridgeServer().notifyRoomChanged(uuid, room);
+            }
+        }
+        Main.getInstance().getBridgeServer().scheduleBroadcastGroupUpdate();
     }
 
     private void onGroupLeave(LeaveGroupEvent event) {
-        Main.getInstance().getBridgeServer().broadcastGroupUpdate();
+        var conn = event.getConnection();
+        if (conn != null && conn.getPlayer() != null) {
+            UUID uuid = conn.getPlayer().getUuid();
+            Main.getInstance().getBridgeServer().notifyRoomChanged(uuid, null);
+        }
+        Main.getInstance().getBridgeServer().scheduleBroadcastGroupUpdate();
     }
 
-    // Fired when SVC destroys an empty group — this is the event that was missing,
-    // causing the mobile to never see group deletions.
     private void onGroupRemove(RemoveGroupEvent event) {
-        Main.getInstance().getSLF4JLogger().info("Group removed: \"{}\"", event.getGroup().getName());
-        Main.getInstance().getBridgeServer().broadcastGroupUpdate();
+        String name = event.getGroup().getName();
+        Main.getInstance().getSLF4JLogger().info("Group removed: \"{}\"", name);
+        Main.getInstance().getGroupManager().untrack(name);
+        Main.getInstance().getBridgeServer().notifyGroupRemoved(name);
+        Main.getInstance().getBridgeServer().scheduleBroadcastGroupUpdate();
     }
 }

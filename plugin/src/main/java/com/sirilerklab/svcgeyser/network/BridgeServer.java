@@ -27,6 +27,7 @@ public class BridgeServer extends WebSocketServer {
     private static final long IDLE_RESET_MS = 200;
 
     private final ConcurrentHashMap<WebSocket, AppSession> sessions = new ConcurrentHashMap<>();
+    private volatile boolean groupUpdateScheduled = false;
     private final ScheduledExecutorService idleChecker = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "svcgeyser-idle");
         t.setDaemon(true);
@@ -90,6 +91,9 @@ public class BridgeServer extends WebSocketServer {
         AppSession.State state = session.getState();
         if (state != AppSession.State.IN_GAME && state != AppSession.State.IN_ROOM) return;
 
+        // Debug log the message size
+        // log().info("Uplink frame size: {}", message.remaining());
+            
         // Uplink: [u8 type=0x01][u16 seq][opus payload]
         message = message.order(ByteOrder.BIG_ENDIAN);
         if (message.remaining() < 4) return;
@@ -151,6 +155,10 @@ public class BridgeServer extends WebSocketServer {
     }
 
     private void handleStatus(AppSession session) {
+        sendStatusTo(session);
+    }
+
+    private void sendStatusTo(AppSession session) {
         if (session.getState() == AppSession.State.CONNECTED) {
             session.send("{\"type\":\"status\",\"inGame\":false,\"groups\":[]}");
             return;
@@ -223,6 +231,7 @@ public class BridgeServer extends WebSocketServer {
         }
 
         session.setState(AppSession.State.IN_ROOM);
+        session.setCurrentRoom(name);
         session.send("{\"type\":\"join_ok\"}");
     }
 
@@ -230,6 +239,7 @@ public class BridgeServer extends WebSocketServer {
         if (session.getState() == AppSession.State.IN_ROOM) {
             leaveGroupIfNeeded(session);
             session.setState(AppSession.State.IN_GAME);
+            session.setCurrentRoom(null);
             log().info("xuid={} left room", session.getXuid());
         }
         session.send("{\"type\":\"leave_ok\"}");
@@ -243,6 +253,7 @@ public class BridgeServer extends WebSocketServer {
                 log().info("xuid={} → in-game (uuid={})", xuid, javaUuid);
                 enterInGame(s, javaUuid);
                 s.send("{\"type\":\"player_joined_game\",\"javaUuid\":\"" + javaUuid + "\"}");
+                sendStatusTo(s);
             }
         }
     }
@@ -257,12 +268,27 @@ public class BridgeServer extends WebSocketServer {
                 s.unregisterSender();
                 s.unregisterListener();
                 s.setState(AppSession.State.WAITING_FOR_PLAYER);
+                s.setCurrentRoom(null);
                 s.send("{\"type\":\"player_left_game\"}");
             }
         }
     }
 
-    /** Called from SVC event thread when any group state changes; push the updated list to all active sessions. */
+    /**
+     * Schedules a group_update broadcast on the next Bukkit tick so api.getGroups()
+     * reflects the SVC event that just fired.
+     */
+    public void scheduleBroadcastGroupUpdate() {
+        if (groupUpdateScheduled) return;
+        groupUpdateScheduled = true;
+        Main.getInstance().getServer().getScheduler().runTaskLater(
+                Main.getInstance(), () -> {
+                    groupUpdateScheduled = false;
+                    broadcastGroupUpdate();
+                }, 1L);
+    }
+
+    /** Push the updated group list to all active sessions. */
     public void broadcastGroupUpdate() {
         VoicechatServerApi api = Main.getInstance().getVoicechatServerApi();
         if (api == null) return;
@@ -273,6 +299,42 @@ public class BridgeServer extends WebSocketServer {
                     || st == AppSession.State.WAITING_FOR_PLAYER) {
                 s.send(json);
             }
+        }
+    }
+
+    /** Notify the app session for a bridged player that their room membership changed. */
+    public void notifyRoomChanged(UUID javaUuid, String roomName) {
+        for (AppSession s : sessions.values()) {
+            String xuid = s.getXuid();
+            if (xuid == null) continue;
+            UUID sessionUuid = Main.getInstance().getXuidPlayerMap().getJavaUuid(xuid);
+            if (!javaUuid.equals(sessionUuid)) continue;
+            AppSession.State st = s.getState();
+            if (st != AppSession.State.IN_GAME && st != AppSession.State.IN_ROOM) continue;
+
+            if (roomName != null) {
+                s.setState(AppSession.State.IN_ROOM);
+                s.setCurrentRoom(roomName);
+                s.send("{\"type\":\"room_changed\",\"room\":\"" + GroupManager.escapeJson(roomName) + "\"}");
+                log().info("xuid={} room_changed → \"{}\"", xuid, roomName);
+            } else {
+                s.setState(AppSession.State.IN_GAME);
+                s.setCurrentRoom(null);
+                s.send("{\"type\":\"room_changed\",\"room\":null}");
+                log().info("xuid={} room_changed → null", xuid);
+            }
+            return;
+        }
+    }
+
+    /** Called when SVC removes a group; clear affected app sessions. */
+    public void notifyGroupRemoved(String groupName) {
+        for (AppSession s : sessions.values()) {
+            if (!groupName.equals(s.getCurrentRoom())) continue;
+            s.setState(AppSession.State.IN_GAME);
+            s.setCurrentRoom(null);
+            s.send("{\"type\":\"room_changed\",\"room\":null}");
+            log().info("xuid={} room_changed → null (group \"{}\" removed)", s.getXuid(), groupName);
         }
     }
 

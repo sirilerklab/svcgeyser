@@ -56,6 +56,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
     implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.security.crypto)
     // Concentus pure-Java Opus codec (Phase 5 audio).
     // Place Concentus.jar from https://github.com/lostromb/concentus/releases/tag/v1.0-java
     // into app/app/libs/ before building.

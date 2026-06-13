@@ -22,6 +22,7 @@ sealed class InboundMessage {
     data class PlayerJoinedGame(val javaUuid: String) : InboundMessage()
     object PlayerLeftGame : InboundMessage()
     data class GroupUpdate(val groups: List<GroupInfo>) : InboundMessage()
+    data class RoomChanged(val room: String?) : InboundMessage()
     object JoinOk : InboundMessage()
     data class JoinFail(val reason: String) : InboundMessage()
     object LeaveOk : InboundMessage()
@@ -148,6 +149,9 @@ class BridgeClient {
             "player_joined_game" -> InboundMessage.PlayerJoinedGame(j.getString("javaUuid"))
             "player_left_game"   -> InboundMessage.PlayerLeftGame
             "group_update"       -> InboundMessage.GroupUpdate(parseGroups(j))
+            "room_changed"       -> InboundMessage.RoomChanged(
+                room = if (j.has("room") && !j.isNull("room")) j.getString("room") else null,
+            )
             "join_ok"            -> InboundMessage.JoinOk
             "join_fail"          -> InboundMessage.JoinFail(j.optString("reason", "unknown"))
             "leave_ok"           -> InboundMessage.LeaveOk

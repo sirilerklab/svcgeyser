@@ -18,6 +18,7 @@ public class AppSession {
     private final WebSocket conn;
     private volatile State  state = State.CONNECTED;
     private volatile String xuid;
+    private volatile String currentRoom;
 
     // downlink
     private volatile PlayerAudioListener audioListener;
@@ -33,8 +34,10 @@ public class AppSession {
 
     public State  getState()            { return state; }
     public void   setState(State state) { this.state = state; }
-    public String getXuid()             { return xuid; }
-    public void   setXuid(String xuid)  { this.xuid = xuid; }
+    public String getXuid()                  { return xuid; }
+    public void   setXuid(String xuid)       { this.xuid = xuid; }
+    public String getCurrentRoom()           { return currentRoom; }
+    public void   setCurrentRoom(String room) { this.currentRoom = room; }
 
     public void send(String json) {
         if (conn.isOpen()) conn.send(json);

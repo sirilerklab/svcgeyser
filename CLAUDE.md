@@ -10,22 +10,39 @@ A Bedrock voice-chat bridge. Goal: let Minecraft **Bedrock** players (connected 
 
 ## Current state
 
-Both modules are **scaffolds**, roughly Phase 0 of the plan in `docs/DOCUMENT.md`:
-- The plugin (`plugin/`) is a bare Paper plugin that only greets players on join. No SVC/Floodgate integration, WebSocket server, or auth yet.
-- The app (`app/`) is the default Android Studio Compose template (a "Hello Android" greeting). No login, networking, or audio yet.
-- `pom.xml` does not yet declare the `voicechat-api`, `floodgate-api`, or a WebSocket dependency that the design requires.
+Both modules are **feature-complete through Phase 5** (audio):
 
-When implementing, follow the phased plan and stop at each phase's exit criteria for review.
+**Plugin (`plugin/`) — Phases 0–4 done:**
+- Gradle + Shadow JAR build; SVC `VoicechatPlugin` registration, group events, audio routing
+- Floodgate XUID map, JWT session tokens, Xbox XSTS auth verifier
+- `BridgeServer` WebSocket (Java-WebSocket 1.5.7, relocated); `AppSession` state machine; `GroupManager`
+- Binary wire protocol: uplink `[0x01][u16 seq][opus]`, downlink `[0x02][16B uuid][u8 flags][spatial?][opus]`
+- `AudioFrameSerializer` for `SoundPacket` → binary downlink frames
+- `plugin.yml` already has `softdepend: [floodgate, voicechat]`
+
+**App (`app/`) — Phases 0–5 done:**
+- Auth: login.live.com OAuth2 PKCE via Chrome Custom Tabs (`LiveOAuthHelper`) → Xbox user token → XSTS (`XboxAuthHelper`). **MSAL was removed** — no Azure Partner Program needed.
+- Network: OkHttp WebSocket `BridgeClient`; full JSON signaling + binary downlink; sealed `InboundMessage`
+- ViewModel: `AppViewModel` with auto-reconnect (exponential backoff 1 s–30 s, generation counter)
+- Screens: `LoginScreen` → `ServerConnectScreen` → `RoomListScreen` via Navigation Compose; bubble overlay (`BubbleService`/`BubbleController`)
+- Audio: `AudioEngine` — AudioRecord 48 kHz → Concentus Opus encode → uplink; downlink → decode → AudioTrack; AEC; 12-frame jitter buffer
+- `VoiceService` foreground service (`foregroundServiceType="microphone"`), partial WakeLock
+
+**Blocker before first app build:** place `Concentus.jar` at `app/app/libs/` (download from the [Concentus Java v1.0 release](https://github.com/lostromb/concentus/releases/tag/v1.0-java)).
+
+**Not started:** Phase 6 (rate limiting, metrics), wss:// for public deployment.
+
+When implementing, follow the phased plan in `docs/DOCUMENT.md` and stop at each phase's exit criteria for review.
 
 ## Two independent modules, two build systems
 
 This repo is **not** a single Gradle/Maven project — the two halves build separately and there is no git repo initialized at the root.
 
-### `plugin/` — Paper server plugin (Java, Maven)
-- Build: `cd plugin && mvn package` → jar in `plugin/target/`.
-- Java **25** (`maven.compiler.source/target = 25` in `pom.xml`). Note this is ahead of the app's toolchain.
-- `paper-api` is a `provided` dependency from the PaperMC repo.
-- Plugin metadata: `plugin/src/main/resources/plugin.yml`. Per the design, this needs `softdepend: [floodgate, voicechat]` once those integrations land.
+### `plugin/` — Paper server plugin (Java, Gradle)
+- Build: `cd plugin && ./gradlew shadowJar` → fat jar in `plugin/build/libs/`. (`pom.xml` is a leftover scaffold — the active build is `build.gradle.kts`.)
+- Java **21** (`sourceCompatibility/targetCompatibility = VERSION_21` in `build.gradle.kts`).
+- Key deps (all declared in `build.gradle.kts`): `paper-api` (compileOnly), `voicechat-api 2.6.13` (compileOnly), `floodgate-api` (compileOnly), `Java-WebSocket 1.5.7` (shaded, relocated to `com.sirilerklab.svcgeyser.libs.ws`).
+- Plugin metadata: `plugin/src/main/resources/plugin.yml` (already has `softdepend: [floodgate, voicechat]`).
 - Entry point: `com.sirilerklab.svcgeyser.Main extends JavaPlugin`.
 
 ### `app/` — Android companion app (Kotlin, Gradle, Jetpack Compose)

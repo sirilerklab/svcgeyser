@@ -159,7 +159,8 @@ Signaling messages (JSON, `type` field):
 - `status` → `status` {inGame: bool, javaUuid?, groups: [{name, hasPassword}]}
 - `join_room` {name, password?} → `join_ok` | `join_fail` {reason}
 - `leave_room` → `leave_ok`
-- server-push: `player_joined_game`, `player_left_game`, `group_update`, `kicked`
+- server-push: `room_changed` {room: string|null} — player's SVC group membership changed (e.g. via Java mod UI)
+- server-push: `player_joined_game`, `player_left_game`, `group_update`, `room_changed`, `kicked`
 - `ping`/`pong` keepalive (10 s)
 
 Audio frames (binary WS messages):

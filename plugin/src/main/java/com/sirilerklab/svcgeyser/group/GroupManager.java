@@ -52,4 +52,9 @@ public class GroupManager {
     private static String escape(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
+
+    /** Escapes a string for use inside a JSON value. */
+    public static String escapeJson(String s) {
+        return escape(s);
+    }
 }

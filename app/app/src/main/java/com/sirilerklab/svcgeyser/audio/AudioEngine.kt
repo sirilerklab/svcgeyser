@@ -1,12 +1,16 @@
 package com.sirilerklab.svcgeyser.audio
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.os.Build
 import org.concentus.OpusApplication
 import org.concentus.OpusDecoder
 import org.concentus.OpusEncoder
@@ -14,7 +18,10 @@ import java.util.concurrent.atomic.AtomicInteger
 
 // Concentus JAR required at app/app/libs/Concentus.jar.
 // Download: https://github.com/lostromb/concentus/releases/tag/v1.0-java
-class AudioEngine(private val onUplinkFrame: (ByteArray) -> Unit) {
+class AudioEngine(
+    private val context: Context,
+    private val onUplinkFrame: (ByteArray) -> Unit,
+) {
 
     companion object {
         private const val SAMPLE_RATE = 48_000
@@ -34,14 +41,20 @@ class AudioEngine(private val onUplinkFrame: (ByteArray) -> Unit) {
     private var echoCanceler: AcousticEchoCanceler? = null
     private var captureThread: Thread? = null
     private var playbackThread: Thread? = null
+    private var audioManager: AudioManager? = null
 
     private val seqNum = AtomicInteger(0)
     @Volatile private var running = false
+    @Volatile var isMuted = false
+    @Volatile var isDeafened = false
+    @Volatile var speakerOn = false
 
     @SuppressLint("MissingPermission")
     fun start() {
         if (running) return
         running = true
+        audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        applySpeakerRoute()
 
         val minRecBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
@@ -60,27 +73,7 @@ class AudioEngine(private val onUplinkFrame: (ByteArray) -> Unit) {
             ar.startRecording()
         }
 
-        val minPlayBuf = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
-        )
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(SAMPLE_RATE)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-            )
-            .setBufferSizeInBytes(maxOf(minPlayBuf, FRAME_BYTES * 8))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-            .also { it.play() }
+        createAndStartAudioTrack()
 
         captureThread = Thread(::captureLoop, "svcgeyser-capture").also { it.start() }
         playbackThread = Thread(::playbackLoop, "svcgeyser-playback").also { it.start() }
@@ -102,7 +95,58 @@ class AudioEngine(private val onUplinkFrame: (ByteArray) -> Unit) {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
+        audioManager = null
         synchronized(jitterLock) { jitterBuffer.clear() }
+    }
+
+    fun applySpeakerRoute(enabled: Boolean) {
+        speakerOn = enabled
+        applySpeakerRoute()
+    }
+
+    private fun createAndStartAudioTrack() {
+        val minPlayBuf = AudioTrack.getMinBufferSize(
+            SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
+        )
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+            )
+            .setBufferSizeInBytes(maxOf(minPlayBuf, FRAME_BYTES * 8))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+            .also { it.play() }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applySpeakerRoute() {
+        val am = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val devices = am.availableCommunicationDevices
+            val target = if (speakerOn) {
+                devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            } else {
+                devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                    ?: devices.find { it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET }
+                    ?: devices.find { it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES }
+            }
+            if (target != null) {
+                am.setCommunicationDevice(target)
+            }
+        } else {
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            am.isSpeakerphoneOn = speakerOn
+        }
     }
 
     private fun captureLoop() {
@@ -111,6 +155,7 @@ class AudioEngine(private val onUplinkFrame: (ByteArray) -> Unit) {
         while (running && !Thread.currentThread().isInterrupted) {
             val read = audioRecord?.read(pcm, 0, FRAME_SAMPLES) ?: break
             if (read < FRAME_SAMPLES) continue
+            if (isMuted) continue
             try {
                 val len = encoder.encode(pcm, 0, FRAME_SAMPLES, encodeBuf, 0, encodeBuf.size)
                 if (len > 0) onUplinkFrame(buildUplinkFrame(encodeBuf, len))
@@ -121,23 +166,25 @@ class AudioEngine(private val onUplinkFrame: (ByteArray) -> Unit) {
     private fun playbackLoop() {
         val silence = ShortArray(FRAME_SAMPLES)
         while (running && !Thread.currentThread().isInterrupted) {
-            val frame = synchronized(jitterLock) {
-                if (jitterBuffer.isEmpty()) null else jitterBuffer.removeFirst()
+            val frame = if (isDeafened) {
+                null
+            } else {
+                synchronized(jitterLock) {
+                    if (jitterBuffer.isEmpty()) null else jitterBuffer.removeFirst()
+                }
             }
-            // AudioTrack.write() blocks until the frame is queued — this paces the loop naturally.
             audioTrack?.write(frame ?: silence, 0, FRAME_SAMPLES)
         }
     }
 
-    // Called from the AppViewModel coroutine for each binary downlink frame.
     fun handleDownlinkFrame(bytes: ByteArray) {
+        if (isDeafened) return
         val pcm = decodeDownlink(bytes) ?: return
         synchronized(jitterLock) {
             if (jitterBuffer.size < MAX_JITTER_FRAMES) jitterBuffer.addLast(pcm)
         }
     }
 
-    // Uplink wire: [u8 0x01][u16 seq BE][opus payload]
     private fun buildUplinkFrame(buf: ByteArray, len: Int): ByteArray {
         val seq = seqNum.getAndIncrement()
         return ByteArray(3 + len).also { f ->
@@ -148,9 +195,6 @@ class AudioEngine(private val onUplinkFrame: (ByteArray) -> Unit) {
         }
     }
 
-    // Downlink wire (plugin AudioFrameSerializer):
-    //   [u8 0x02][16B senderUuid][u8 flags][f32 x,y,z,distance]?[opus]
-    //   flag 0x04 = HAS_SPATIAL → 16-byte spatial header present
     private fun decodeDownlink(bytes: ByteArray): ShortArray? {
         if (bytes.size < 18 || bytes[0] != 0x02.toByte()) return null
         val flags = bytes[17].toInt() and 0xFF
