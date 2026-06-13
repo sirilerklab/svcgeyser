@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- API 31+ requires this alongside FOREGROUND_SERVICE when using microphone type. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Floating bubble overlay over other apps (user must grant in Settings). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.SVCGeyser">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.SVCGeyser">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            OAuth2 redirect handler for the login.live.com Custom Tabs flow.
+            client_id = fdcde701-35a0-4e25-bf8c-3d66b0985f57
+            redirect_uri = svcgeyser://auth
+            No signature hash or Azure portal registration needed — just the custom scheme.
+        -->
+        <activity
+            android:name=".auth.OAuthRedirectActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:scheme="svcgeyser"
+                    android:host="auth" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".service.VoiceService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
+
+        <!--
+            Floating bubble overlay for quick voice-channel join/leave while in Minecraft.
+            Not a foreground service — kept alive by VoiceService's foreground notification.
+        -->
+        <service
+            android:name=".service.BubbleService"
+            android:exported="false" />
+    </application>
+
+</manifest>

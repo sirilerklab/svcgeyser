@@ -1,0 +1,2 @@
+ws-port: 9000
+jwt-secret: "change-me-to-a-long-random-secret"

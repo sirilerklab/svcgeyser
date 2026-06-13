@@ -1,0 +1,9 @@
+name: SVCGeyser
+version: 1.0-SNAPSHOT
+main: com.sirilerklab.svcgeyser.Main
+description: Simple Voice Chat + Geyser bridge
+author: SirilerkLAB
+api-version: '1.21'
+softdepend:
+  - floodgate
+  - voicechat

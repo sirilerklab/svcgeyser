@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Allow cleartext (ws:// / http://) traffic to user-configured servers.
+    The server is always operator-owned (Minecraft + bridge plugin), so plain
+    WebSocket is acceptable for LAN/local network setups.
+    For internet-facing deployments, put the server behind a TLS reverse proxy
+    (nginx / Cloudflare) and switch BridgeClient to wss://.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

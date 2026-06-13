@@ -1,0 +1,1 @@
+{"type":"auth","xstsHeader":"XBL3.0 x=<uhs>;<xsts_token>"}
