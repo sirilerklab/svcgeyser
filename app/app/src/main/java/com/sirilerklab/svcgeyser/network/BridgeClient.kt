@@ -58,6 +58,11 @@ class BridgeClient {
         send("""{"type":"status"}""")
     }
 
+    fun sendAudioState(muted: Boolean, deafened: Boolean) {
+        Log.d(TAG, "→ audio_state muted=$muted deafened=$deafened")
+        send("""{"type":"audio_state","muted":$muted,"deafened":$deafened}""")
+    }
+
     fun sendPing() = send("""{"type":"ping"}""")
 
     fun sendJoinRoom(name: String, password: String?) {

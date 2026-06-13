@@ -24,12 +24,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Headset
-import androidx.compose.material.icons.filled.HeadsetOff
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.filled.HearingDisabled
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -279,24 +279,24 @@ private fun AudioControlBar(
         ) {
             IconButton(onClick = onToggleMute) {
                 Icon(
-                    if (isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
-                    contentDescription = "Mute",
+                    imageVector = if (isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                    contentDescription = if (isMuted) "Unmute microphone" else "Mute microphone",
                     tint = if (isMuted) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.primary,
                 )
             }
             IconButton(onClick = onToggleDeafen) {
                 Icon(
-                    if (isDeafened) Icons.Filled.HeadsetOff else Icons.Filled.Headset,
-                    contentDescription = "Deafen",
+                    imageVector = if (isDeafened) Icons.Filled.HearingDisabled else Icons.Filled.Hearing,
+                    contentDescription = if (isDeafened) "Undeafen" else "Deafen",
                     tint = if (isDeafened) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.primary,
                 )
             }
             IconButton(onClick = onToggleSpeaker) {
                 Icon(
-                    if (speakerOn) Icons.Filled.VolumeUp else Icons.Filled.Phone,
-                    contentDescription = "Speaker",
+                    imageVector = if (speakerOn) Icons.Filled.VolumeUp else Icons.Filled.Headphones,
+                    contentDescription = if (speakerOn) "Switch to headphones" else "Switch to speaker",
                     tint = if (speakerOn) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )

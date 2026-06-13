@@ -19,6 +19,8 @@ public class AppSession {
     private volatile State  state = State.CONNECTED;
     private volatile String xuid;
     private volatile String currentRoom;
+    private volatile boolean muted;
+    private volatile boolean deafened;
 
     // downlink
     private volatile PlayerAudioListener audioListener;
@@ -38,6 +40,10 @@ public class AppSession {
     public void   setXuid(String xuid)       { this.xuid = xuid; }
     public String getCurrentRoom()           { return currentRoom; }
     public void   setCurrentRoom(String room) { this.currentRoom = room; }
+    public boolean isMuted()                 { return muted; }
+    public void    setMuted(boolean muted)   { this.muted = muted; }
+    public boolean isDeafened()              { return deafened; }
+    public void    setDeafened(boolean deafened) { this.deafened = deafened; }
 
     public void send(String json) {
         if (conn.isOpen()) conn.send(json);

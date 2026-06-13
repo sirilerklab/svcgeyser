@@ -2,22 +2,31 @@ package com.sirilerklab.svcgeyser.service
 
 import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
+import android.app.AlertDialog
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.IBinder
+import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import com.sirilerklab.svcgeyser.R
+import com.sirilerklab.svcgeyser.network.GroupInfo
 import com.sirilerklab.svcgeyser.ui.bubble.BubbleController
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -41,19 +50,29 @@ class BubbleService : Service() {
         val COL_SURFACE = 0xFFFFFBFE.toInt()
         val COL_ON_SURFACE = 0xFF1C1B1F.toInt()
         val COL_MUTED = 0xFF49454F.toInt()
+        val COL_OUTLINE = 0xFFE7E0EC.toInt()
+        val COL_PRIMARY_CONTAINER = 0xFFEADDFF.toInt()
     }
 
     private val scope = MainScope()
     private var wm: WindowManager? = null
     private var root: FrameLayout? = null
     private var bubbleBtn: ImageView? = null
-    private var pill: LinearLayout? = null
+    private var panel: LinearLayout? = null
+    private var headerRow: LinearLayout? = null
     private var roomLabel: TextView? = null
     private var statusDot: View? = null
-    private var leaveBtn: TextView? = null
+    private var muteBtn: ImageView? = null
+    private var deafenBtn: ImageView? = null
+    private var speakerBtn: ImageView? = null
+    private var channelsScroll: ScrollView? = null
+    private var channelsContainer: LinearLayout? = null
+    private var createBtn: TextView? = null
+    private var emptyLabel: TextView? = null
     private lateinit var params: WindowManager.LayoutParams
     private var expanded = false
     private var pulseAnimator: ObjectAnimator? = null
+    private var lastJoinError: String? = null
 
     private var dragInitWinX = 0
     private var dragInitWinY = 0
@@ -96,12 +115,12 @@ class BubbleService : Service() {
             layoutParams = FrameLayout.LayoutParams(circleSize, circleSize)
         }
 
-        pill = buildPill(dp)
-        pill!!.visibility = View.GONE
-        pill!!.alpha = 0f
+        panel = buildPanel(dp, dm.widthPixels, dm.heightPixels)
+        panel!!.visibility = View.GONE
+        panel!!.alpha = 0f
 
         root!!.addView(bubbleBtn)
-        root!!.addView(pill)
+        root!!.addView(panel)
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val defaultX = dm.widthPixels - (56 * dp).toInt()
@@ -123,59 +142,192 @@ class BubbleService : Service() {
         attachCollapsedTouchHandler()
     }
 
-    private fun buildPill(dp: Float): LinearLayout {
-        val hPad = (10 * dp).toInt()
-        val vPad = (6 * dp).toInt()
+    private fun buildPanel(dp: Float, screenWidth: Int, screenHeight: Int): LinearLayout {
+        val pad = (12 * dp).toInt()
+        val panelWidth = (280 * dp).toInt()
+        val maxListHeight = channelListMaxHeight(dp, screenWidth, screenHeight)
 
         return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = roundRect(COL_SURFACE, 22 * dp)
-            elevation = 6 * dp
-            setPadding(hPad, vPad, hPad, vPad)
-            layoutParams = FrameLayout.LayoutParams(
-                (220 * dp).toInt(),
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-            )
+            orientation = LinearLayout.VERTICAL
+            background = roundRect(COL_SURFACE, 16 * dp)
+            elevation = 8 * dp
+            setPadding(pad, pad, pad, pad)
+            layoutParams = FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.WRAP_CONTENT)
 
-            statusDot = View(context).apply {
-                background = circle(COL_MUTED)
-                layoutParams = LinearLayout.LayoutParams((8 * dp).toInt(), (8 * dp).toInt()).apply {
-                    rightMargin = (6 * dp).toInt()
+            headerRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                )
+                statusDot = View(context).apply {
+                    background = circle(COL_MUTED)
+                    layoutParams = LinearLayout.LayoutParams((8 * dp).toInt(), (8 * dp).toInt()).apply {
+                        rightMargin = (8 * dp).toInt()
+                    }
                 }
+                addView(statusDot)
+                roomLabel = TextView(context).apply {
+                    text = "Not in channel"
+                    textSize = 13f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(COL_ON_SURFACE)
+                    maxLines = 1
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                addView(roomLabel)
+                addView(iconBtn("✕", dp, COL_MUTED) { collapse() })
             }
-            addView(statusDot)
+            addView(headerRow)
 
-            roomLabel = TextView(context).apply {
-                text = "Not in channel"
+            addView(divider(dp))
+
+            val audioRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt())
+                muteBtn = iconImage(R.drawable.ic_mic_on, dp) { BubbleController.onToggleMute?.invoke() }
+                addView(muteBtn)
+                deafenBtn = iconImage(R.drawable.ic_hearing_on, dp) { BubbleController.onToggleDeafen?.invoke() }
+                addView(deafenBtn)
+                speakerBtn = iconImage(R.drawable.ic_headphones, dp) { BubbleController.onToggleSpeaker?.invoke() }
+                addView(speakerBtn)
+            }
+            addView(audioRow)
+
+            addView(divider(dp))
+
+            createBtn = TextView(context).apply {
+                text = "+ Create channel"
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(COL_PURPLE)
+                background = roundRect(COL_PRIMARY_CONTAINER, 10 * dp)
+                setPadding((12 * dp).toInt(), (10 * dp).toInt(), (12 * dp).toInt(), (10 * dp).toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = (8 * dp).toInt() }
+                setOnClickListener { showCreateDialog() }
+            }
+            addView(createBtn)
+
+            addView(sectionLabel("CHANNELS", dp))
+
+            channelsScroll = ScrollView(context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    maxListHeight,
+                )
+                channelsContainer = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                addView(channelsContainer)
+            }
+            addView(channelsScroll)
+
+            emptyLabel = TextView(context).apply {
+                text = "No channels yet"
                 textSize = 12f
-                setTextColor(COL_ON_SURFACE)
-                maxLines = 1
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setTextColor(COL_MUTED)
+                setPadding(0, (4 * dp).toInt(), 0, 0)
+                visibility = View.GONE
             }
-            addView(roomLabel)
+            addView(emptyLabel)
 
-            addView(iconBtn("M", dp) { BubbleController.onToggleMute?.invoke() })
-            addView(iconBtn("D", dp) { BubbleController.onToggleDeafen?.invoke() })
-            leaveBtn = iconBtn("L", dp) {
-                BubbleController.onLeave?.invoke()
-                collapse()
-            }
-            addView(leaveBtn)
-            addView(iconBtn("✕", dp) { collapse() })
+            attachPanelDragHandler()
         }
     }
 
-    private fun iconBtn(label: String, dp: Float, onClick: () -> Unit): TextView {
+    private fun channelListMaxHeight(dp: Float, screenWidth: Int, screenHeight: Int): Int {
+        val isLandscape = screenWidth > screenHeight
+        return if (isLandscape) {
+            (96 * dp).toInt()
+        } else {
+            (screenHeight * 0.28f).toInt().coerceIn((96 * dp).toInt(), (200 * dp).toInt())
+        }
+    }
+
+    private fun updatePanelLayout() {
+        val dm = resources.displayMetrics
+        val dp = dm.density
+        val maxH = channelListMaxHeight(dp, dm.widthPixels, dm.heightPixels)
+        channelsScroll?.layoutParams = (channelsScroll?.layoutParams as? LinearLayout.LayoutParams)?.apply {
+            height = maxH
+        }
+        clampPanelOnScreen(dm.widthPixels, dm.heightPixels)
+        panel?.requestLayout()
+        root?.let { wm?.updateViewLayout(it, params) }
+    }
+
+    private fun clampPanelOnScreen(screenWidth: Int, screenHeight: Int) {
+        val panelView = panel ?: return
+        panelView.measure(
+            View.MeasureSpec.makeMeasureSpec((280 * resources.displayMetrics.density).toInt(), View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        )
+        val panelH = panelView.measuredHeight
+        val maxY = (screenHeight - panelH).coerceAtLeast(0)
+        if (params.y > maxY) {
+            params.y = maxY
+            savePosition()
+        }
+        val panelW = panelView.measuredWidth
+        val maxX = (screenWidth - panelW).coerceAtLeast(0)
+        if (params.x > maxX) {
+            params.x = maxX
+            savePosition()
+        }
+    }
+
+    private fun sectionLabel(text: String, dp: Float): TextView {
+        return TextView(this).apply {
+            this.text = text
+            textSize = 10f
+            setTextColor(COL_MUTED)
+            setPadding(0, (6 * dp).toInt(), 0, (4 * dp).toInt())
+        }
+    }
+
+    private fun divider(dp: Float): View {
+        return View(this).apply {
+            setBackgroundColor(COL_OUTLINE)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (1 * dp).toInt(),
+            ).apply {
+                topMargin = (6 * dp).toInt()
+                bottomMargin = (6 * dp).toInt()
+            }
+        }
+    }
+
+    private fun iconImage(drawableRes: Int, dp: Float, onClick: () -> Unit): ImageView {
+        return ImageView(this).apply {
+            setImageResource(drawableRes)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            val size = (36 * dp).toInt()
+            val pad = (6 * dp).toInt()
+            setPadding(pad, pad, pad, pad)
+            layoutParams = LinearLayout.LayoutParams(size, size)
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun iconBtn(label: String, dp: Float, color: Int, onClick: () -> Unit): TextView {
         return TextView(this).apply {
             text = label
-            textSize = 11f
+            textSize = 14f
             gravity = Gravity.CENTER
-            setTextColor(COL_PURPLE)
-            val size = (28 * dp).toInt()
-            layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                leftMargin = (2 * dp).toInt()
-            }
+            setTextColor(color)
+            val size = (32 * dp).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size)
             setOnClickListener { onClick() }
         }
     }
@@ -211,21 +363,53 @@ class BubbleService : Service() {
         }
     }
 
+    private fun attachPanelDragHandler() {
+        headerRow?.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragInitWinX = params.x
+                    dragInitWinY = params.y
+                    dragInitTouchX = e.rawX
+                    dragInitTouchY = e.rawY
+                    hasMoved = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - dragInitTouchX
+                    val dy = e.rawY - dragInitTouchY
+                    if (abs(dx) > 6 || abs(dy) > 6) {
+                        hasMoved = true
+                        params.x = (dragInitWinX + dx).toInt().coerceAtLeast(0)
+                        params.y = (dragInitWinY + dy).toInt().coerceAtLeast(0)
+                        wm?.updateViewLayout(root, params)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (hasMoved) savePosition()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
     private fun expand() {
         expanded = true
+        updatePanelLayout()
         root!!.setOnTouchListener(null)
         bubbleBtn!!.animate().scaleX(0f).scaleY(0f).alpha(0f).setDuration(150).withEndAction {
             bubbleBtn!!.visibility = View.GONE
         }.start()
-        pill!!.visibility = View.VISIBLE
-        pill!!.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200)
+        panel!!.visibility = View.VISIBLE
+        panel!!.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200)
             .setInterpolator(AccelerateDecelerateInterpolator()).start()
     }
 
     private fun collapse() {
         expanded = false
-        pill!!.animate().scaleX(0.8f).scaleY(0.8f).alpha(0f).setDuration(150).withEndAction {
-            pill!!.visibility = View.GONE
+        panel!!.animate().scaleX(0.9f).scaleY(0.9f).alpha(0f).setDuration(150).withEndAction {
+            panel!!.visibility = View.GONE
             bubbleBtn!!.visibility = View.VISIBLE
             bubbleBtn!!.scaleX = 1f
             bubbleBtn!!.scaleY = 1f
@@ -238,42 +422,223 @@ class BubbleService : Service() {
     private fun observe() {
         scope.launch {
             combine(
-                BubbleController.currentRoom,
-                BubbleController.inGame,
-                BubbleController.isMuted,
-                BubbleController.isDeafened,
-            ) { room, inGame, muted, _ ->
-                Quad(room, inGame, muted)
-            }.collect { (room, inGame, muted) ->
-                refreshUI(room, inGame, muted)
+                combine(
+                    BubbleController.groups,
+                    BubbleController.currentRoom,
+                    BubbleController.inGame,
+                    BubbleController.isMuted,
+                    BubbleController.isDeafened,
+                ) { groups, room, inGame, muted, deafened ->
+                    BubbleUiPartial(groups, room, inGame, muted, deafened)
+                },
+                BubbleController.speakerOn,
+                BubbleController.joinError,
+            ) { partial, speakerOn, joinError ->
+                PanelState(
+                    groups = partial.groups,
+                    room = partial.room,
+                    inGame = partial.inGame,
+                    isMuted = partial.isMuted,
+                    isDeafened = partial.isDeafened,
+                    speakerOn = speakerOn,
+                    joinError = joinError,
+                )
+            }.collect { state ->
+                if (state.joinError != null && state.joinError != lastJoinError) {
+                    Toast.makeText(this@BubbleService, "Join failed: ${state.joinError}", Toast.LENGTH_SHORT).show()
+                    lastJoinError = state.joinError
+                    BubbleController.onClearJoinError?.invoke()
+                }
+                if (state.joinError == null) lastJoinError = null
+                refreshUI(state)
             }
         }
     }
 
-    private data class Quad<A, B, C>(val a: A, val b: B, val c: C)
+    private data class BubbleUiPartial(
+        val groups: List<GroupInfo>,
+        val room: String?,
+        val inGame: Boolean,
+        val isMuted: Boolean,
+        val isDeafened: Boolean,
+    )
 
-    private fun refreshUI(currentRoom: String?, inGame: Boolean, isMuted: Boolean) {
+    private data class PanelState(
+        val groups: List<GroupInfo>,
+        val room: String?,
+        val inGame: Boolean,
+        val isMuted: Boolean,
+        val isDeafened: Boolean,
+        val speakerOn: Boolean,
+        val joinError: String?,
+    )
+
+    private fun refreshUI(state: PanelState) {
         val color = when {
-            isMuted -> COL_RED
-            currentRoom != null -> COL_GREEN
+            state.isMuted -> COL_RED
+            state.room != null -> COL_GREEN
             else -> COL_PURPLE
         }
         bubbleBtn?.background = circle(color)
-
         statusDot?.background = circle(color)
-        roomLabel?.text = when {
-            currentRoom != null -> currentRoom
-            inGame -> "Not in channel"
-            else -> "Waiting…"
-        }
-        leaveBtn?.visibility = if (currentRoom != null) View.VISIBLE else View.GONE
 
-        // Pulse when in-room and unmuted
-        if (currentRoom != null && !isMuted && !expanded) {
+        roomLabel?.text = when {
+            state.room != null -> state.room
+            state.inGame -> "Not in channel"
+            else -> "Waiting for player…"
+        }
+
+        muteBtn?.setImageResource(if (state.isMuted) R.drawable.ic_mic_off else R.drawable.ic_mic_on)
+        deafenBtn?.setImageResource(if (state.isDeafened) R.drawable.ic_hearing_off else R.drawable.ic_hearing_on)
+        speakerBtn?.setImageResource(if (state.speakerOn) R.drawable.ic_speaker_on else R.drawable.ic_headphones)
+
+        val canManageChannels = state.inGame
+        createBtn?.visibility = if (canManageChannels && state.room == null) View.VISIBLE else View.GONE
+        createBtn?.alpha = if (canManageChannels) 1f else 0.5f
+
+        rebuildChannelList(state)
+
+        if (state.room != null && !state.isMuted && !expanded) {
             startPulse()
         } else {
             stopPulse()
         }
+    }
+
+    private fun rebuildChannelList(state: PanelState) {
+        val container = channelsContainer ?: return
+        val dp = resources.displayMetrics.density
+        container.removeAllViews()
+
+        if (!state.inGame) {
+            emptyLabel?.visibility = View.VISIBLE
+            emptyLabel?.text = "Join the Minecraft server first"
+            return
+        }
+
+        if (state.groups.isEmpty()) {
+            emptyLabel?.visibility = View.VISIBLE
+            emptyLabel?.text = "No channels yet — create one below"
+            return
+        }
+
+        emptyLabel?.visibility = View.GONE
+
+        for (group in state.groups) {
+            val isCurrent = state.room == group.name
+            val canJoin = state.room == null
+
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = roundRect(
+                    if (isCurrent) COL_PRIMARY_CONTAINER else Color.TRANSPARENT,
+                    8 * dp,
+                )
+                setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = (4 * dp).toInt() }
+            }
+
+            val prefix = if (group.hasPassword) "🔒 " else "🔊 "
+            val nameView = TextView(this).apply {
+                text = "$prefix${group.name}"
+                textSize = 13f
+                setTextColor(COL_ON_SURFACE)
+                maxLines = 1
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            row.addView(nameView)
+
+            val actionBtn = TextView(this).apply {
+                textSize = 12f
+                setTypeface(null, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setPadding((10 * dp).toInt(), (4 * dp).toInt(), (10 * dp).toInt(), (4 * dp).toInt())
+            }
+
+            if (isCurrent) {
+                actionBtn.text = "Leave"
+                actionBtn.setTextColor(COL_RED)
+                actionBtn.setOnClickListener { BubbleController.onLeave?.invoke() }
+            } else {
+                actionBtn.text = "Join"
+                actionBtn.setTextColor(if (canJoin) COL_PURPLE else COL_MUTED)
+                actionBtn.isEnabled = canJoin
+                actionBtn.alpha = if (canJoin) 1f else 0.4f
+                actionBtn.setOnClickListener {
+                    if (!canJoin) return@setOnClickListener
+                    if (group.hasPassword) showPasswordDialog(group.name)
+                    else BubbleController.onJoin?.invoke(group.name, null)
+                }
+            }
+            row.addView(actionBtn)
+            container.addView(row)
+        }
+    }
+
+    private fun showOverlayDialog(builder: AlertDialog.Builder): AlertDialog {
+        val dialog = builder.create()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        }
+        dialog.show()
+        return dialog
+    }
+
+    private fun showPasswordDialog(groupName: String) {
+        val input = EditText(this).apply {
+            hint = "Password"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setPadding(48, 32, 48, 16)
+        }
+        showOverlayDialog(
+            AlertDialog.Builder(this)
+                .setTitle("Join $groupName")
+                .setView(input)
+                .setPositiveButton("Join") { _, _ ->
+                    val pw = input.text?.toString()?.trim().orEmpty()
+                    if (pw.isNotBlank()) BubbleController.onJoin?.invoke(groupName, pw)
+                    else Toast.makeText(this, "Password required", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null),
+        )
+    }
+
+    private fun showCreateDialog() {
+        val dp = resources.displayMetrics.density
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((20 * dp).toInt(), (12 * dp).toInt(), (20 * dp).toInt(), (4 * dp).toInt())
+        }
+        val nameInput = EditText(this).apply {
+            hint = "Channel name"
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        val pwInput = EditText(this).apply {
+            hint = "Password (optional)"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        layout.addView(nameInput)
+        layout.addView(pwInput)
+
+        showOverlayDialog(
+            AlertDialog.Builder(this)
+                .setTitle("Create channel")
+                .setView(layout)
+                .setPositiveButton("Create") { _, _ ->
+                    val name = nameInput.text?.toString()?.trim().orEmpty()
+                    if (name.isBlank()) {
+                        Toast.makeText(this, "Name required", Toast.LENGTH_SHORT).show()
+                        return@setPositiveButton
+                    }
+                    val pw = pwInput.text?.toString()?.trim().orEmpty()
+                    BubbleController.onCreateChannel?.invoke(name, pw.ifBlank { null })
+                }
+                .setNegativeButton("Cancel", null),
+        )
     }
 
     private fun startPulse() {

@@ -3,6 +3,7 @@ package com.sirilerklab.svcgeyser.ui.viewmodel
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.provider.Settings
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -77,6 +78,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private var bridgeClient: BridgeClient? = null
     private var messageJob: Job? = null
+    private var statusPollJob: Job? = null
     private var audioEngine: AudioEngine? = null
 
     private var lastAddress: String? = null
@@ -95,13 +97,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 BubbleController.isMuted.value     = state.isMuted
                 BubbleController.isDeafened.value  = state.isDeafened
                 BubbleController.speakerOn.value   = state.speakerOn
+                BubbleController.joinError.value   = state.joinError
             }
         }
-        BubbleController.onJoin       = { name, pw -> joinRoom(name, pw) }
-        BubbleController.onLeave      = { leaveRoom() }
+        BubbleController.onJoin           = { name, pw -> joinRoom(name, pw) }
+        BubbleController.onCreateChannel  = { name, pw -> joinRoom(name, pw) }
+        BubbleController.onLeave          = { leaveRoom() }
         BubbleController.onToggleMute = { toggleMute() }
         BubbleController.onToggleDeafen = { toggleDeafen() }
         BubbleController.onToggleSpeaker = { toggleSpeaker() }
+        BubbleController.onClearJoinError = { clearJoinError() }
 
         restoreSession()
     }
@@ -204,6 +209,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnect() {
         connectionGeneration++
         reconnectJob?.cancel()
+        statusPollJob?.cancel()
         messageJob?.cancel()
         stopAudioEngine()
         bridgeClient?.close()
@@ -244,6 +250,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         VoiceService.startConnected(ctx)
                         client.sendStatus()
+                        startStatusPolling(client)
                     }
                     is InboundMessage.AuthFail -> {
                         _ui.value = _ui.value.copy(
@@ -253,15 +260,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         VoiceService.stop(ctx)
                     }
                     is InboundMessage.Status -> {
+                        val wasInGame = _ui.value.inGame
                         _ui.value = _ui.value.copy(
                             inGame = msg.inGame,
                             javaUuid = msg.javaUuid,
                             groups = msg.groups,
                         )
+                        if (msg.inGame && !wasInGame) maybeAutoStartBubble()
                     }
                     is InboundMessage.PlayerJoinedGame -> {
                         _ui.value = _ui.value.copy(inGame = true, javaUuid = msg.javaUuid)
                         client.sendStatus()
+                        maybeAutoStartBubble()
                     }
                     is InboundMessage.PlayerLeftGame -> {
                         _ui.value = _ui.value.copy(
@@ -273,10 +283,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         VoiceService.startConnected(ctx)
                     }
                     is InboundMessage.GroupUpdate -> {
-                        val keptRoom = _ui.value.currentRoom?.takeIf { room ->
-                            msg.groups.any { it.name == room }
-                        }
-                        _ui.value = _ui.value.copy(groups = msg.groups, currentRoom = keptRoom)
+                        _ui.value = _ui.value.copy(groups = msg.groups)
                     }
                     is InboundMessage.RoomChanged -> {
                         pendingJoinName = null
@@ -321,6 +328,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun startStatusPolling(client: BridgeClient) {
+        statusPollJob?.cancel()
+        statusPollJob = viewModelScope.launch {
+            while (true) {
+                delay(5_000)
+                client.sendStatus()
+            }
+        }
+    }
+
     private fun scheduleReconnect() {
         val session = _ui.value.xboxSession ?: return
         reconnectJob?.cancel()
@@ -342,6 +359,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             engine.speakerOn = state.speakerOn
             engine.start()
         }
+        bridgeClient?.sendAudioState(state.isMuted, state.isDeafened)
         VoiceService.startVoice(ctx)
     }
 
@@ -354,12 +372,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val next = !_ui.value.isMuted
         audioEngine?.isMuted = next
         _ui.value = _ui.value.copy(isMuted = next)
+        bridgeClient?.sendAudioState(next, _ui.value.isDeafened)
     }
 
     fun toggleDeafen() {
         val next = !_ui.value.isDeafened
         audioEngine?.isDeafened = next
         _ui.value = _ui.value.copy(isDeafened = next)
+        bridgeClient?.sendAudioState(_ui.value.isMuted, next)
     }
 
     fun toggleSpeaker() {
@@ -385,6 +405,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---- Bubble ---------------------------------------------------------
 
+    private fun maybeAutoStartBubble() {
+        if (_ui.value.bubbleEnabled || !_ui.value.inGame) return
+        if (!Settings.canDrawOverlays(ctx)) return
+        BubbleService.start(ctx)
+        _ui.value = _ui.value.copy(bubbleEnabled = true)
+    }
+
     fun toggleBubble() {
         if (_ui.value.bubbleEnabled) {
             BubbleService.stop(ctx)
@@ -397,12 +424,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         BubbleController.onJoin = null
+        BubbleController.onCreateChannel = null
         BubbleController.onLeave = null
         BubbleController.onToggleMute = null
         BubbleController.onToggleDeafen = null
         BubbleController.onToggleSpeaker = null
+        BubbleController.onClearJoinError = null
         connectionGeneration++
         reconnectJob?.cancel()
+        statusPollJob?.cancel()
         messageJob?.cancel()
         stopAudioEngine()
         bridgeClient?.close()

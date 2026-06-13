@@ -3,6 +3,7 @@ package com.sirilerklab.svcgeyser.audio
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.AudioAttributes
@@ -42,6 +43,7 @@ class AudioEngine(
     private var captureThread: Thread? = null
     private var playbackThread: Thread? = null
     private var audioManager: AudioManager? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     private val seqNum = AtomicInteger(0)
     @Volatile private var running = false
@@ -54,6 +56,7 @@ class AudioEngine(
         if (running) return
         running = true
         audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        requestVoiceFocus()
         applySpeakerRoute()
 
         val minRecBuf = AudioRecord.getMinBufferSize(
@@ -95,6 +98,7 @@ class AudioEngine(
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
+        abandonVoiceFocus()
         audioManager = null
         synchronized(jitterLock) { jitterBuffer.clear() }
     }
@@ -102,6 +106,35 @@ class AudioEngine(
     fun applySpeakerRoute(enabled: Boolean) {
         speakerOn = enabled
         applySpeakerRoute()
+    }
+
+    private fun requestVoiceFocus() {
+        val am = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                .build()
+            am.requestAudioFocus(audioFocusRequest!!)
+        } else {
+            @Suppress("DEPRECATION")
+            am.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN)
+        }
+    }
+
+    private fun abandonVoiceFocus() {
+        val am = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            am.abandonAudioFocus(null)
+        }
     }
 
     private fun createAndStartAudioTrack() {
@@ -125,27 +158,54 @@ class AudioEngine(
             .setBufferSizeInBytes(maxOf(minPlayBuf, FRAME_BYTES * 8))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
-            .also { it.play() }
+            .also {
+                it.play()
+                routePlaybackDevice(audioManager!!)
+            }
     }
 
     @Suppress("DEPRECATION")
     private fun applySpeakerRoute() {
         val am = audioManager ?: return
+        am.mode = AudioManager.MODE_IN_COMMUNICATION
+        am.isBluetoothScoOn = false
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { am.clearCommunicationDevice() }
             val devices = am.availableCommunicationDevices
             val target = if (speakerOn) {
                 devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
             } else {
-                devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                devices.find { it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES }
                     ?: devices.find { it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET }
-                    ?: devices.find { it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES }
+                    ?: devices.find { it.type == AudioDeviceInfo.TYPE_USB_HEADSET }
+                    ?: devices.find { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+                    ?: devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
             }
             if (target != null) {
                 am.setCommunicationDevice(target)
             }
+        }
+        // Always set speakerphone as fallback — some devices ignore setCommunicationDevice alone.
+        am.isSpeakerphoneOn = speakerOn
+
+        routePlaybackDevice(am)
+    }
+
+    private fun routePlaybackDevice(am: AudioManager) {
+        val track = audioTrack ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val outputs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val target = if (speakerOn) {
+            outputs.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
         } else {
-            am.mode = AudioManager.MODE_IN_COMMUNICATION
-            am.isSpeakerphoneOn = speakerOn
+            outputs.find { it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES }
+                ?: outputs.find { it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET }
+                ?: outputs.find { it.type == AudioDeviceInfo.TYPE_USB_HEADSET }
+                ?: outputs.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+        }
+        if (target != null) {
+            track.setPreferredDevice(target)
         }
     }
 

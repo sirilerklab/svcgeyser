@@ -10,10 +10,13 @@ object BubbleController {
     val isMuted     = MutableStateFlow(false)
     val isDeafened  = MutableStateFlow(false)
     val speakerOn   = MutableStateFlow(false)
+    val joinError   = MutableStateFlow<String?>(null)
 
     var onJoin: ((name: String, password: String?) -> Unit)? = null
+    var onCreateChannel: ((name: String, password: String?) -> Unit)? = null
     var onLeave: (() -> Unit)? = null
     var onToggleMute: (() -> Unit)? = null
     var onToggleDeafen: (() -> Unit)? = null
     var onToggleSpeaker: (() -> Unit)? = null
+    var onClearJoinError: (() -> Unit)? = null
 }

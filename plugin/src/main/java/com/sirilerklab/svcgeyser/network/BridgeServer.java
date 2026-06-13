@@ -77,10 +77,11 @@ public class BridgeServer extends WebSocketServer {
         String type = msg.has("type") ? msg.get("type").getAsString() : "";
         switch (type) {
             case "auth"       -> handleAuth(session, msg);
-            case "status"     -> handleStatus(session);
-            case "join_room"  -> handleJoinRoom(session, msg);
-            case "leave_room" -> handleLeaveRoom(session);
-            case "ping"       -> session.send("{\"type\":\"pong\"}");
+            case "status"      -> handleStatus(session);
+            case "audio_state" -> handleAudioState(session, msg);
+            case "join_room"   -> handleJoinRoom(session, msg);
+            case "leave_room"  -> handleLeaveRoom(session);
+            case "ping"        -> session.send("{\"type\":\"pong\"}");
         }
     }
 
@@ -158,6 +159,14 @@ public class BridgeServer extends WebSocketServer {
         sendStatusTo(session);
     }
 
+    private void handleAudioState(AppSession session, JsonObject msg) {
+        boolean muted    = msg.has("muted")    && msg.get("muted").getAsBoolean();
+        boolean deafened = msg.has("deafened") && msg.get("deafened").getAsBoolean();
+        session.setMuted(muted);
+        session.setDeafened(deafened);
+        log().info("xuid={} audio_state muted={} deafened={}", session.getXuid(), muted, deafened);
+    }
+
     private void sendStatusTo(AppSession session) {
         if (session.getState() == AppSession.State.CONNECTED) {
             session.send("{\"type\":\"status\",\"inGame\":false,\"groups\":[]}");
@@ -233,6 +242,8 @@ public class BridgeServer extends WebSocketServer {
         session.setState(AppSession.State.IN_ROOM);
         session.setCurrentRoom(name);
         session.send("{\"type\":\"join_ok\"}");
+        session.send("{\"type\":\"room_changed\",\"room\":\"" + GroupManager.escapeJson(name) + "\"}");
+        scheduleBroadcastGroupUpdate();
     }
 
     private void handleLeaveRoom(AppSession session) {
@@ -241,6 +252,7 @@ public class BridgeServer extends WebSocketServer {
             session.setState(AppSession.State.IN_GAME);
             session.setCurrentRoom(null);
             log().info("xuid={} left room", session.getXuid());
+            session.send("{\"type\":\"room_changed\",\"room\":null}");
         }
         session.send("{\"type\":\"leave_ok\"}");
     }
