@@ -40,5 +40,10 @@ object CrashReporter {
         }.getOrNull()
     }
 
+    /** Logs a non-fatal throwable to logcat without killing the process. */
+    fun logNonFatal(context: Context, tag: String, t: Throwable) {
+        Log.e(TAG, "non-fatal [$tag]: ${t.message}", t)
+    }
+
     private fun crashFile(context: Context) = File(context.filesDir, FILE_NAME)
 }
