@@ -1,2 +1,6 @@
 # Copy to gradle.local.properties for local builds (not committed).
 liveOAuthClientId=your-azure-app-client-id
+
+# Crash-log upload endpoint (Cloudflare Worker). Leave unset to disable uploading.
+# crashUploadUrl=https://crash-log-upload.YOUR_SUBDOMAIN.workers.dev/upload
+# crashUploadApiKey=YOUR_PRODUCTION_API_KEY

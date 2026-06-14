@@ -14,6 +14,8 @@ import com.sirilerklab.svcgeyser.auth.XboxAuthHelper
 import com.sirilerklab.svcgeyser.auth.XboxSession
 import com.sirilerklab.svcgeyser.data.SavedServer
 import com.sirilerklab.svcgeyser.data.ServerRepository
+import com.sirilerklab.svcgeyser.diag.CrashReporter
+import com.sirilerklab.svcgeyser.diag.CrashUploader
 import com.sirilerklab.svcgeyser.network.BridgeClient
 import com.sirilerklab.svcgeyser.network.GroupInfo
 import com.sirilerklab.svcgeyser.network.GroupType
@@ -52,6 +54,13 @@ sealed class ConnectStatus {
 val ConnectStatus.isOnline: Boolean
     get() = this is ConnectStatus.Connected
 
+sealed class CrashUploadStatus {
+    object Idle : CrashUploadStatus()
+    object Sending : CrashUploadStatus()
+    data class Sent(val url: String) : CrashUploadStatus()
+    data class Failed(val message: String) : CrashUploadStatus()
+}
+
 data class AppUiState(
     val authReady: Boolean = false,
     val loginStatus: LoginStatus = LoginStatus.Restoring,
@@ -70,6 +79,9 @@ data class AppUiState(
     val isDeafened: Boolean = false,
     val speakerOn: Boolean = false,
     val showReconnected: Boolean = false,
+    val lastCrash: String? = null,
+    val crashUploadConfigured: Boolean = false,
+    val crashUpload: CrashUploadStatus = CrashUploadStatus.Idle,
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -124,7 +136,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         BubbleController.onToggleSpeaker = { toggleSpeaker() }
         BubbleController.onClearJoinError = { clearJoinError() }
 
+        // Surface a crash captured on the previous run so it can be uploaded.
+        CrashReporter.consumeLastCrash(ctx)?.let {
+            _ui.value = _ui.value.copy(lastCrash = it, crashUploadConfigured = CrashUploader.isConfigured)
+        }
+
         restoreSession()
+    }
+
+    /** Uploads the captured crash trace to the configured Worker endpoint. */
+    fun sendCrashReport() {
+        val crash = _ui.value.lastCrash ?: return
+        if (_ui.value.crashUpload is CrashUploadStatus.Sending) return
+        _ui.value = _ui.value.copy(crashUpload = CrashUploadStatus.Sending)
+        viewModelScope.launch {
+            val result = CrashUploader.upload(ctx, crash)
+            _ui.value = _ui.value.copy(
+                crashUpload = result.fold(
+                    onSuccess = { CrashUploadStatus.Sent(it.url) },
+                    onFailure = { CrashUploadStatus.Failed(it.message ?: "Upload failed") },
+                ),
+            )
+        }
+    }
+
+    fun clearLastCrash() {
+        _ui.value = _ui.value.copy(lastCrash = null, crashUpload = CrashUploadStatus.Idle)
     }
 
     val isLoggedIn: Boolean get() = _ui.value.xboxSession != null
