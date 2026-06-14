@@ -30,6 +30,7 @@ import android.widget.Toast
 import com.sirilerklab.svcgeyser.R
 import com.sirilerklab.svcgeyser.network.GroupInfo
 import com.sirilerklab.svcgeyser.network.GroupType
+import com.sirilerklab.svcgeyser.network.RoomMember
 import com.sirilerklab.svcgeyser.ui.bubble.BubbleController
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -70,6 +71,8 @@ class BubbleService : Service() {
     private var speakerBtn: ImageView? = null
     private var channelsScroll: ScrollView? = null
     private var channelsContainer: LinearLayout? = null
+    private var membersContainer: LinearLayout? = null
+    private var membersSection: View? = null
     private var createBtn: TextView? = null
     private var emptyLabel: TextView? = null
     private lateinit var params: WindowManager.LayoutParams
@@ -201,6 +204,16 @@ class BubbleService : Service() {
 
             addView(divider(dp))
 
+            membersSection = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                membersContainer = this
+                addView(sectionLabel("MEMBERS", dp))
+            }
+            addView(membersSection)
+
+            addView(divider(dp))
+
             createBtn = TextView(context).apply {
                 text = "+ Create channel"
                 textSize = 13f
@@ -309,6 +322,13 @@ class BubbleService : Service() {
                 bottomMargin = (6 * dp).toInt()
             }
         }
+    }
+
+    private fun tintIcon(view: ImageView?, drawableRes: Int, color: Int) {
+        view ?: return
+        view.setImageResource(drawableRes)
+        view.clearColorFilter()
+        view.setColorFilter(color)
     }
 
     private fun iconImage(drawableRes: Int, dp: Float, onClick: () -> Unit): ImageView {
@@ -436,7 +456,9 @@ class BubbleService : Service() {
                 },
                 BubbleController.speakerOn,
                 BubbleController.joinError,
-            ) { partial, speakerOn, joinError ->
+                BubbleController.roomMembers,
+                BubbleController.speakingUuids,
+            ) { partial, speakerOn, joinError, roomMembers, speakingUuids ->
                 PanelState(
                     groups = partial.groups,
                     room = partial.room,
@@ -445,6 +467,8 @@ class BubbleService : Service() {
                     isDeafened = partial.isDeafened,
                     speakerOn = speakerOn,
                     joinError = joinError,
+                    roomMembers = roomMembers,
+                    speakingUuids = speakingUuids,
                 )
             }.collect { state ->
                 if (state.joinError != null && state.joinError != lastJoinError) {
@@ -474,6 +498,8 @@ class BubbleService : Service() {
         val isDeafened: Boolean,
         val speakerOn: Boolean,
         val joinError: String?,
+        val roomMembers: List<RoomMember>,
+        val speakingUuids: Set<String>,
     )
 
     private fun refreshUI(state: PanelState) {
@@ -491,20 +517,86 @@ class BubbleService : Service() {
             else -> "Waiting for player…"
         }
 
-        muteBtn?.setImageResource(if (state.isMuted) R.drawable.ic_mic_off else R.drawable.ic_mic_on)
-        deafenBtn?.setImageResource(if (state.isDeafened) R.drawable.ic_hearing_off else R.drawable.ic_hearing_on)
-        speakerBtn?.setImageResource(if (state.speakerOn) R.drawable.ic_speaker_on else R.drawable.ic_headphones)
+        tintIcon(
+            muteBtn,
+            if (state.isMuted) R.drawable.ic_mic_off else R.drawable.ic_mic_on,
+            if (state.isMuted) COL_RED else COL_PURPLE,
+        )
+        tintIcon(
+            deafenBtn,
+            if (state.isDeafened) R.drawable.ic_hearing_off else R.drawable.ic_hearing_on,
+            if (state.isDeafened) COL_RED else COL_PURPLE,
+        )
+        tintIcon(
+            speakerBtn,
+            if (state.speakerOn) R.drawable.ic_speaker_on else R.drawable.ic_headphones,
+            if (state.speakerOn) COL_PURPLE else COL_MUTED,
+        )
 
         val canManageChannels = state.inGame
         createBtn?.visibility = if (canManageChannels && state.room == null) View.VISIBLE else View.GONE
         createBtn?.alpha = if (canManageChannels) 1f else 0.5f
 
+        rebuildMemberList(state)
         rebuildChannelList(state)
 
         if (state.room != null && !state.isMuted && !expanded) {
             startPulse()
         } else {
             stopPulse()
+        }
+    }
+
+    private fun rebuildMemberList(state: PanelState) {
+        val section = membersSection ?: return
+        val container = membersContainer ?: return
+        val dp = resources.displayMetrics.density
+
+        if (state.room == null) {
+            section.visibility = View.GONE
+            container.removeAllViews()
+            container.addView(sectionLabel("MEMBERS", dp))
+            return
+        }
+
+        section.visibility = View.VISIBLE
+        container.removeAllViews()
+        container.addView(sectionLabel("MEMBERS", dp))
+
+        if (state.roomMembers.isEmpty()) {
+            container.addView(TextView(this).apply {
+                text = "No other members in channel"
+                textSize = 12f
+                setTextColor(COL_MUTED)
+                setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt())
+            })
+            return
+        }
+
+        for (member in state.roomMembers) {
+            val isSpeaking = member.uuid in state.speakingUuids
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt())
+            }
+            row.addView(View(this).apply {
+                background = circle(if (isSpeaking) COL_GREEN else COL_OUTLINE)
+                layoutParams = LinearLayout.LayoutParams((8 * dp).toInt(), (8 * dp).toInt()).apply {
+                    rightMargin = (8 * dp).toInt()
+                }
+            })
+            row.addView(TextView(this).apply {
+                text = buildString {
+                    if (isSpeaking) append("🎤 ")
+                    append(member.name)
+                }
+                textSize = 13f
+                setTextColor(if (isSpeaking) COL_GREEN else COL_ON_SURFACE)
+                setTypeface(null, if (isSpeaking) Typeface.BOLD else Typeface.NORMAL)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            container.addView(row)
         }
     }
 

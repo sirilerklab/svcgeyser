@@ -29,6 +29,10 @@ class AudioEngine(
         private const val FRAME_SAMPLES = 960       // 20 ms at 48 kHz mono
         private const val FRAME_BYTES = FRAME_SAMPLES * 2
         private const val MAX_JITTER_FRAMES = 12    // 240 ms overflow guard
+        /** RMS threshold for 16-bit mono PCM — frames below this are treated as silence. */
+        private const val SPEECH_RMS_THRESHOLD = 600.0
+        /** Keep sending briefly after speech ends to avoid clipped syllables. */
+        private const val SPEECH_HANG_MS = 100L
     }
 
     private val encoder = OpusEncoder(SAMPLE_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP)
@@ -50,6 +54,8 @@ class AudioEngine(
     @Volatile var isMuted = false
     @Volatile var isDeafened = false
     @Volatile var speakerOn = false
+
+    @Volatile private var speechHangUntilMs = 0L
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -216,11 +222,30 @@ class AudioEngine(
             val read = audioRecord?.read(pcm, 0, FRAME_SAMPLES) ?: break
             if (read < FRAME_SAMPLES) continue
             if (isMuted) continue
+            if (!shouldUplink(pcm)) continue
             try {
                 val len = encoder.encode(pcm, 0, FRAME_SAMPLES, encodeBuf, 0, encodeBuf.size)
                 if (len > 0) onUplinkFrame(buildUplinkFrame(encodeBuf, len))
             } catch (_: Exception) { /* skip malformed frame */ }
         }
+    }
+
+    private fun shouldUplink(pcm: ShortArray): Boolean {
+        val now = System.currentTimeMillis()
+        if (computeRms(pcm) >= SPEECH_RMS_THRESHOLD) {
+            speechHangUntilMs = now + SPEECH_HANG_MS
+            return true
+        }
+        return now < speechHangUntilMs
+    }
+
+    private fun computeRms(pcm: ShortArray): Double {
+        var sum = 0.0
+        for (s in pcm) {
+            val v = s.toDouble()
+            sum += v * v
+        }
+        return kotlin.math.sqrt(sum / pcm.size)
     }
 
     private fun playbackLoop() {

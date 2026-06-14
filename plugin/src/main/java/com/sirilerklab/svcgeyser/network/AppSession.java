@@ -194,6 +194,13 @@ public class AppSession {
         AudioSender sender = audioSender;
         if (sender != null) {
             sender.send(opus);
+            String xuid = this.xuid;
+            if (xuid != null) {
+                UUID javaUuid = Main.getInstance().getXuidPlayerMap().getJavaUuid(xuid);
+                if (javaUuid != null) {
+                    Main.getInstance().getBridgeServer().onMicrophonePacket(javaUuid);
+                }
+            }
         } else {
             // Logged at most once per session to avoid flooding.
             if (uplinkWarnLogged.compareAndSet(false, true)) {
@@ -207,6 +214,14 @@ public class AppSession {
     public void resetSenderIfIdle(long now, long thresholdMs) {
         AudioSender sender = audioSender;
         if (sender != null && now - lastUplinkMs > thresholdMs) {
+            sender.reset();
+        }
+    }
+
+    /** Immediately signals end-of-stream to SVC (e.g. on mute). */
+    public void resetSender() {
+        AudioSender sender = audioSender;
+        if (sender != null) {
             sender.reset();
         }
     }

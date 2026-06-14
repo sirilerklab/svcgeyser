@@ -6,6 +6,7 @@ import com.sirilerklab.svcgeyser.Main;
 import com.sirilerklab.svcgeyser.auth.SessionJwt;
 import com.sirilerklab.svcgeyser.auth.XboxAuthVerifier;
 import com.sirilerklab.svcgeyser.group.GroupManager;
+import com.sirilerklab.svcgeyser.group.RoomRosterTracker;
 import de.maxhenkel.voicechat.api.Group;
 import de.maxhenkel.voicechat.api.VoicechatConnection;
 import de.maxhenkel.voicechat.api.VoicechatServerApi;
@@ -18,6 +19,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -30,6 +33,9 @@ public class BridgeServer extends WebSocketServer {
 
     private final ConcurrentHashMap<WebSocket, AppSession> sessions = new ConcurrentHashMap<>();
     private volatile boolean groupUpdateScheduled = false;
+    private volatile boolean rosterUpdateScheduled = false;
+    private volatile String pendingRosterRoom = null;
+    private final RoomRosterTracker roomRosterTracker = new RoomRosterTracker();
     private final ScheduledExecutorService idleChecker = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "svcgeyser-idle");
         t.setDaemon(true);
@@ -167,6 +173,9 @@ public class BridgeServer extends WebSocketServer {
         boolean deafened = msg.has("deafened") && msg.get("deafened").getAsBoolean();
         session.setMuted(muted);
         session.setDeafened(deafened);
+        if (muted) {
+            session.resetSender();
+        }
         log().info("xuid={} audio_state muted={} deafened={}", session.getXuid(), muted, deafened);
     }
 
@@ -186,6 +195,10 @@ public class BridgeServer extends WebSocketServer {
         }
         String groups   = api != null ? GroupManager.toJson(api.getGroups()) : "[]";
         session.send("{\"type\":\"status\",\"inGame\":" + inGame + uuidPart + roomPart + ",\"groups\":" + groups + "}");
+        if (room != null) {
+            Main.getInstance().getServer().getScheduler().runTask(
+                    Main.getInstance(), () -> pushRoomRosterTo(session, room));
+        }
     }
 
     private void handleJoinRoom(AppSession session, JsonObject msg) {
@@ -266,6 +279,7 @@ public class BridgeServer extends WebSocketServer {
                 session.send("{\"type\":\"join_ok\"}");
                 session.send("{\"type\":\"room_changed\",\"room\":\"" + GroupManager.escapeJson(name) + "\"}");
                 scheduleBroadcastGroupUpdate();
+                scheduleRoomRosterBroadcast(name);
             } catch (Exception e) {
                 log().error("join_room failed for xuid={} room=\"{}\"", session.getXuid(), name, e);
                 session.send("{\"type\":\"join_fail\",\"reason\":\"group_error\"}");
@@ -274,12 +288,18 @@ public class BridgeServer extends WebSocketServer {
     }
 
     private void handleLeaveRoom(AppSession session) {
+        String oldRoom = session.getCurrentRoom();
         if (session.getState() == AppSession.State.IN_ROOM) {
             leaveGroupIfNeeded(session);
             session.setState(AppSession.State.IN_GAME);
             session.setCurrentRoom(null);
             log().info("xuid={} left room", session.getXuid());
             session.send("{\"type\":\"room_changed\",\"room\":null}");
+            session.send(RoomRosterTracker.emptyRosterJson());
+            session.send(RoomRosterTracker.emptySpeakingJson());
+            if (oldRoom != null) {
+                scheduleRoomRosterBroadcast(oldRoom);
+            }
         }
         session.send("{\"type\":\"leave_ok\"}");
     }
@@ -356,10 +376,13 @@ public class BridgeServer extends WebSocketServer {
                 s.setCurrentRoom(roomName);
                 s.send("{\"type\":\"room_changed\",\"room\":\"" + GroupManager.escapeJson(roomName) + "\"}");
                 log().info("xuid={} room_changed → \"{}\"", xuid, roomName);
+                scheduleRoomRosterBroadcast(roomName);
             } else {
                 s.setState(AppSession.State.IN_GAME);
                 s.setCurrentRoom(null);
                 s.send("{\"type\":\"room_changed\",\"room\":null}");
+                s.send(RoomRosterTracker.emptyRosterJson());
+                s.send(RoomRosterTracker.emptySpeakingJson());
                 log().info("xuid={} room_changed → null", xuid);
             }
             return;
@@ -373,8 +396,65 @@ public class BridgeServer extends WebSocketServer {
             s.setState(AppSession.State.IN_GAME);
             s.setCurrentRoom(null);
             s.send("{\"type\":\"room_changed\",\"room\":null}");
+            s.send(RoomRosterTracker.emptyRosterJson());
+            s.send(RoomRosterTracker.emptySpeakingJson());
             log().info("xuid={} room_changed → null (group \"{}\" removed)", s.getXuid(), groupName);
         }
+        roomRosterTracker.clearRoom(groupName);
+    }
+
+    /**
+     * Schedules a room_roster broadcast on the next Bukkit tick so SVC group state is settled.
+     */
+    public void scheduleRoomRosterBroadcast(String roomName) {
+        if (roomName == null) return;
+        pendingRosterRoom = roomName;
+        if (rosterUpdateScheduled) return;
+        rosterUpdateScheduled = true;
+        Main.getInstance().getServer().getScheduler().runTaskLater(
+                Main.getInstance(), () -> {
+                    rosterUpdateScheduled = false;
+                    String room = pendingRosterRoom;
+                    pendingRosterRoom = null;
+                    if (room != null) broadcastRoomRoster(room);
+                }, 1L);
+    }
+
+    /** Push full roster + current speaking state to all app sessions in the given room. Main thread only. */
+    public void broadcastRoomRoster(String roomName) {
+        var members = roomRosterTracker.buildRoster(roomName, this);
+        roomRosterTracker.cacheRoster(roomName, members);
+        long now = System.currentTimeMillis();
+        roomRosterTracker.seedSpeaking(roomName, members, now);
+
+        String rosterJson = RoomRosterTracker.toRosterJson(roomName, members);
+        String speakingJson = RoomRosterTracker.toSpeakingJson(
+                roomName, roomRosterTracker.computeSpeaking(members, now));
+
+        for (AppSession s : sessions.values()) {
+            if (s.getState() == AppSession.State.IN_ROOM && roomName.equals(s.getCurrentRoom())) {
+                s.send(rosterJson);
+                s.send(speakingJson);
+            }
+        }
+    }
+
+    private void pushRoomRosterTo(AppSession session, String roomName) {
+        var members = roomRosterTracker.buildRoster(roomName, this);
+        roomRosterTracker.cacheRoster(roomName, members);
+        long now = System.currentTimeMillis();
+        roomRosterTracker.seedSpeaking(roomName, members, now);
+        session.send(RoomRosterTracker.toRosterJson(roomName, members));
+        session.send(RoomRosterTracker.toSpeakingJson(
+                roomName, roomRosterTracker.computeSpeaking(members, now)));
+    }
+
+    public RoomRosterTracker getRoomRosterTracker() {
+        return roomRosterTracker;
+    }
+
+    public void onMicrophonePacket(UUID senderUuid) {
+        roomRosterTracker.markSpeaking(senderUuid);
     }
 
     // ---- helpers --------------------------------------------------------
@@ -465,6 +545,25 @@ public class BridgeServer extends WebSocketServer {
             AppSession.State st = s.getState();
             if (st == AppSession.State.IN_GAME || st == AppSession.State.IN_ROOM) {
                 s.resetSenderIfIdle(now, IDLE_RESET_MS);
+            }
+        }
+        tickSpeakingUpdates(now);
+    }
+
+    private void tickSpeakingUpdates(long now) {
+        Set<String> rooms = new HashSet<>(roomRosterTracker.cachedRooms());
+        for (AppSession s : sessions.values()) {
+            if (s.getState() == AppSession.State.IN_ROOM && s.getCurrentRoom() != null) {
+                rooms.add(s.getCurrentRoom());
+            }
+        }
+        for (String room : rooms) {
+            String json = roomRosterTracker.tickSpeaking(room, now);
+            if (json == null) continue;
+            for (AppSession s : sessions.values()) {
+                if (s.getState() == AppSession.State.IN_ROOM && room.equals(s.getCurrentRoom())) {
+                    s.send(json);
+                }
             }
         }
     }

@@ -6,6 +6,7 @@ import de.maxhenkel.voicechat.api.events.CreateGroupEvent;
 import de.maxhenkel.voicechat.api.events.EventRegistration;
 import de.maxhenkel.voicechat.api.events.JoinGroupEvent;
 import de.maxhenkel.voicechat.api.events.LeaveGroupEvent;
+import de.maxhenkel.voicechat.api.events.MicrophonePacketEvent;
 import de.maxhenkel.voicechat.api.events.RemoveGroupEvent;
 import de.maxhenkel.voicechat.api.events.VoicechatServerStartedEvent;
 
@@ -28,6 +29,7 @@ public class SvcGeyserVoicePlugin implements VoicechatPlugin {
         registration.registerEvent(JoinGroupEvent.class,              this::onGroupJoin);
         registration.registerEvent(LeaveGroupEvent.class,             this::onGroupLeave);
         registration.registerEvent(RemoveGroupEvent.class,            this::onGroupRemove);
+        registration.registerEvent(MicrophonePacketEvent.class,       this::onMicrophonePacket);
     }
 
     private void onServerStarted(VoicechatServerStartedEvent event) {
@@ -52,11 +54,21 @@ public class SvcGeyserVoicePlugin implements VoicechatPlugin {
 
     private void onGroupLeave(LeaveGroupEvent event) {
         var conn = event.getConnection();
+        String leftRoom = event.getGroup() != null ? event.getGroup().getName() : null;
         if (conn != null && conn.getPlayer() != null) {
             UUID uuid = conn.getPlayer().getUuid();
             Main.getInstance().getBridgeServer().notifyRoomChanged(uuid, null);
         }
+        if (leftRoom != null) {
+            Main.getInstance().getBridgeServer().scheduleRoomRosterBroadcast(leftRoom);
+        }
         Main.getInstance().getBridgeServer().scheduleBroadcastGroupUpdate();
+    }
+
+    private void onMicrophonePacket(MicrophonePacketEvent event) {
+        var sender = event.getSenderConnection();
+        if (sender == null || sender.getPlayer() == null) return;
+        Main.getInstance().getBridgeServer().onMicrophonePacket(sender.getPlayer().getUuid());
     }
 
     private void onGroupRemove(RemoveGroupEvent event) {

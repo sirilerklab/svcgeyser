@@ -18,6 +18,7 @@ import com.sirilerklab.svcgeyser.network.BridgeClient
 import com.sirilerklab.svcgeyser.network.GroupInfo
 import com.sirilerklab.svcgeyser.network.GroupType
 import com.sirilerklab.svcgeyser.network.InboundMessage
+import com.sirilerklab.svcgeyser.network.RoomMember
 import com.sirilerklab.svcgeyser.service.BubbleService
 import com.sirilerklab.svcgeyser.service.VoiceService
 import com.sirilerklab.svcgeyser.ui.bubble.BubbleController
@@ -61,6 +62,8 @@ data class AppUiState(
     val javaUuid: String? = null,
     val groups: List<GroupInfo> = emptyList(),
     val currentRoom: String? = null,
+    val roomMembers: List<RoomMember> = emptyList(),
+    val speakingUuids: Set<String> = emptySet(),
     val joinError: String? = null,
     val bubbleEnabled: Boolean = false,
     val isMuted: Boolean = false,
@@ -109,6 +112,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 BubbleController.isDeafened.value  = state.isDeafened
                 BubbleController.speakerOn.value   = state.speakerOn
                 BubbleController.joinError.value   = state.joinError
+                BubbleController.roomMembers.value = state.roomMembers
+                BubbleController.speakingUuids.value = state.speakingUuids
             }
         }
         BubbleController.onJoin           = { name, pw -> joinRoom(name, pw) }
@@ -241,6 +246,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             inGame = false,
             javaUuid = null,
             currentRoom = null,
+            roomMembers = emptyList(),
+            speakingUuids = emptySet(),
             joinError = null,
             bubbleEnabled = false,
             isMuted = false,
@@ -257,13 +264,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         savedRoomPassword = lastRoomPassword
         awaitingReconnect = true
         VoiceService.updateConnectionState(ctx, reconnecting = true, voiceActive = false)
-        _ui.value = _ui.value.copy(
+        _ui.value = clearRoomState(_ui.value.copy(
             connectStatus = ConnectStatus.Reconnecting(reconnectDelayMs),
             sessionToken = null,
-            currentRoom = null,
-        )
+        ))
         if (connectionGeneration == gen) scheduleReconnect()
     }
+
+    private fun clearRoomState(state: AppUiState) = state.copy(
+        currentRoom = null,
+        roomMembers = emptyList(),
+        speakingUuids = emptySet(),
+    )
 
     private fun doConnect(session: XboxSession) {
         val gen = ++connectionGeneration
@@ -320,11 +332,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         maybeAutoStartBubble()
                     }
                     is InboundMessage.PlayerLeftGame -> {
-                        _ui.value = _ui.value.copy(
+                        _ui.value = clearRoomState(_ui.value.copy(
                             inGame = false,
                             javaUuid = null,
-                            currentRoom = null,
-                        )
+                        ))
                         stopAudioEngine()
                         VoiceService.updateConnectionState(ctx, reconnecting = false, voiceActive = false)
                     }
@@ -333,7 +344,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     is InboundMessage.RoomChanged -> {
                         pendingJoinName = null
-                        _ui.value = _ui.value.copy(currentRoom = msg.room)
+                        if (msg.room == null) {
+                            _ui.value = clearRoomState(_ui.value.copy(currentRoom = null))
+                        } else {
+                            _ui.value = _ui.value.copy(currentRoom = msg.room)
+                        }
                     }
                     is InboundMessage.JoinOk -> {
                         pendingJoinName?.let { _ui.value = _ui.value.copy(currentRoom = it) }
@@ -346,7 +361,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         pendingJoinName = null
                     }
                     is InboundMessage.LeaveOk -> {
-                        _ui.value = _ui.value.copy(currentRoom = null)
+                        _ui.value = clearRoomState(_ui.value)
+                    }
+                    is InboundMessage.RoomRoster -> {
+                        if (msg.room == null || msg.room == _ui.value.currentRoom) {
+                            _ui.value = _ui.value.copy(roomMembers = msg.members)
+                        }
+                    }
+                    is InboundMessage.SpeakingUpdate -> {
+                        if (msg.room == null || msg.room == _ui.value.currentRoom) {
+                            _ui.value = _ui.value.copy(speakingUuids = msg.speaking)
+                        }
                     }
                     is InboundMessage.DownlinkFrame -> {
                         audioEngine?.handleDownlinkFrame(msg.bytes)

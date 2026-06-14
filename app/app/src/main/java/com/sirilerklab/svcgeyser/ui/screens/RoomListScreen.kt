@@ -69,6 +69,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.sirilerklab.svcgeyser.network.GroupInfo
 import com.sirilerklab.svcgeyser.network.GroupType
+import com.sirilerklab.svcgeyser.network.RoomMember
 import com.sirilerklab.svcgeyser.ui.viewmodel.AppViewModel
 import com.sirilerklab.svcgeyser.ui.viewmodel.ConnectStatus
 import com.sirilerklab.svcgeyser.ui.viewmodel.isOnline
@@ -207,6 +208,12 @@ fun RoomListScreen(
                         ActiveRoomBanner(
                             roomName = state.currentRoom!!,
                             onLeave = { if (isOnline) vm.leaveRoom() },
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        RoomMembersSection(
+                            members = state.roomMembers,
+                            speakingUuids = state.speakingUuids,
+                            selfUuid = state.javaUuid,
                         )
                         Spacer(Modifier.height(16.dp))
                     }
@@ -351,6 +358,68 @@ private fun AudioControlBar(
                     tint = if (speakerOn) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RoomMembersSection(
+    members: List<RoomMember>,
+    speakingUuids: Set<String>,
+    selfUuid: String?,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            "MEMBERS",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        if (members.isEmpty()) {
+            Text(
+                "No other members in channel",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+        } else {
+            members.forEach { member ->
+                val isSpeaking = member.uuid in speakingUuids
+                val isSelf = member.uuid == selfUuid
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Spacer(
+                        Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (isSpeaking) Color(0xFF4CAF50)
+                                else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                            ),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        if (isSelf) "${member.name} (you)" else member.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (isSpeaking) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (isSpeaking) Color(0xFF2E7D32)
+                        else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (isSpeaking) {
+                        Icon(
+                            Icons.Filled.Mic,
+                            contentDescription = "Speaking",
+                            tint = Color(0xFF4CAF50),
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
             }
         }
     }

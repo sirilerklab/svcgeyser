@@ -28,6 +28,8 @@ sealed class InboundMessage {
     object PlayerLeftGame : InboundMessage()
     data class GroupUpdate(val groups: List<GroupInfo>) : InboundMessage()
     data class RoomChanged(val room: String?) : InboundMessage()
+    data class RoomRoster(val room: String?, val members: List<RoomMember>) : InboundMessage()
+    data class SpeakingUpdate(val room: String?, val speaking: Set<String>) : InboundMessage()
     object JoinOk : InboundMessage()
     data class JoinFail(val reason: String) : InboundMessage()
     object LeaveOk : InboundMessage()
@@ -49,6 +51,8 @@ enum class GroupType(val wire: String, val label: String, val description: Strin
 }
 
 data class GroupInfo(val name: String, val hasPassword: Boolean, val type: GroupType = GroupType.ISOLATED)
+
+data class RoomMember(val uuid: String, val name: String)
 
 class BridgeClient {
 
@@ -182,6 +186,14 @@ class BridgeClient {
             "room_changed"       -> InboundMessage.RoomChanged(
                 room = if (j.has("room") && !j.isNull("room")) j.getString("room") else null,
             )
+            "room_roster"        -> InboundMessage.RoomRoster(
+                room = if (j.has("room") && !j.isNull("room")) j.getString("room") else null,
+                members = parseRoomMembers(j),
+            )
+            "speaking_update"    -> InboundMessage.SpeakingUpdate(
+                room = if (j.has("room") && !j.isNull("room")) j.getString("room") else null,
+                speaking = parseSpeaking(j),
+            )
             "join_ok"            -> InboundMessage.JoinOk
             "join_fail"          -> InboundMessage.JoinFail(j.optString("reason", "unknown"))
             "leave_ok"           -> InboundMessage.LeaveOk
@@ -191,6 +203,22 @@ class BridgeClient {
                 InboundMessage.Pong
             }
         }
+    }
+
+    private fun parseRoomMembers(j: JSONObject): List<RoomMember> {
+        val arr = j.optJSONArray("members") ?: return emptyList()
+        return (0 until arr.length()).map { i ->
+            val m = arr.getJSONObject(i)
+            RoomMember(
+                uuid = m.getString("uuid"),
+                name = m.getString("name"),
+            )
+        }
+    }
+
+    private fun parseSpeaking(j: JSONObject): Set<String> {
+        val arr = j.optJSONArray("speaking") ?: return emptySet()
+        return (0 until arr.length()).mapTo(linkedSetOf()) { arr.getString(it) }
     }
 
     private fun parseGroups(j: JSONObject): List<GroupInfo> {
