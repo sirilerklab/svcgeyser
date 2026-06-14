@@ -2,7 +2,7 @@
 
 Bedrock voice-chat bridge for **PaperMC** servers running **GeyserMC**, **Floodgate**, and **Simple Voice Chat (SVC)** — with **WSS (TLS)** encryption between the Android app and server.
 
-**Latest release:** [v0.0.1-rc.1](https://github.com/sirilerklab/svcgeyser/releases/tag/v0.0.1-rc.1) — download the plugin JAR and Android APK from [GitHub Releases](https://github.com/sirilerklab/svcgeyser/releases).
+**Latest release:** [GitHub Releases](https://github.com/sirilerklab/svcgeyser/releases/latest) — download the plugin JAR and Android APK from the latest release.
 
 ![SVCGeyser showcase — Bedrock and Java players in voice chat](docs/images/showcase.webp)
 
@@ -82,14 +82,14 @@ Spigot or other forks may work if SVC and Floodgate load correctly, but only **P
 
 ## Installation
 
-Download from [v0.0.1-rc.1](https://github.com/sirilerklab/svcgeyser/releases/tag/v0.0.1-rc.1):
+Download the latest release from [GitHub Releases](https://github.com/sirilerklab/svcgeyser/releases/latest):
 
-- [`svcgeyser-0.0.1-rc.1.jar`](https://github.com/sirilerklab/svcgeyser/releases/download/v0.0.1-rc.1/svcgeyser-0.0.1-rc.1.jar)
-- [`svcgeyser-0.0.1-rc.1.apk`](https://github.com/sirilerklab/svcgeyser/releases/download/v0.0.1-rc.1/svcgeyser-0.0.1-rc.1.apk)
+- `svcgeyser-<version>.jar` — server plugin
+- `svcgeyser-<version>.apk` — Android companion app
 
 ### Server plugin
 
-1. Download [`svcgeyser-0.0.1-rc.1.jar`](https://github.com/sirilerklab/svcgeyser/releases/download/v0.0.1-rc.1/svcgeyser-0.0.1-rc.1.jar).
+1. Download the latest `svcgeyser-<version>.jar` from [GitHub Releases](https://github.com/sirilerklab/svcgeyser/releases/latest).
 2. Copy into your Paper server's `plugins/` folder (requires GeyserMC, Floodgate, Simple Voice Chat).
 3. Restart the server and edit `plugins/SVCGeyser/config.yml`:
    - Leave `jwt-secret` and `keystore-password` blank on first run — the plugin generates both automatically.
@@ -118,7 +118,7 @@ Download from [v0.0.1-rc.1](https://github.com/sirilerklab/svcgeyser/releases/ta
 
 ### Android app
 
-1. Download [`svcgeyser-0.0.1-rc.1.apk`](https://github.com/sirilerklab/svcgeyser/releases/download/v0.0.1-rc.1/svcgeyser-0.0.1-rc.1.apk).
+1. Download the latest `svcgeyser-<version>.apk` from [GitHub Releases](https://github.com/sirilerklab/svcgeyser/releases/latest).
 2. On the device: enable **Install unknown apps** for your browser or files app.
 3. Open the APK and install (Android 7.0+ / API 24+).
 4. Grant **Microphone** and **Internet**. For the optional bubble overlay, enable **Display over other apps** manually — see [Enable bubble overlay](#enable-display-over-other-apps-bubble-overlay) (required on some phones due to protected access).
@@ -145,7 +145,7 @@ The bridge **always uses WSS** (WebSocket over TLS). On first run the plugin gen
 
 ### Checksums
 
-SHA256 sums are attached as `.sha256` files on the [release page](https://github.com/sirilerklab/svcgeyser/releases/tag/v0.0.1-rc.1).
+SHA256 sums are attached as `.sha256` files on the [latest release page](https://github.com/sirilerklab/svcgeyser/releases/latest).
 
 ---
 
