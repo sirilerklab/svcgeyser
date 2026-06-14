@@ -1,17 +1,19 @@
 package com.sirilerklab.svcgeyser.group;
 
+import com.sirilerklab.svcgeyser.Main;
 import de.maxhenkel.voicechat.api.Group;
 
+import java.lang.reflect.Field;
 import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Tracks passwords for groups created via the bridge so that subsequent joiners
- * can be verified. SVC's API exposes only {@link Group#hasPassword()} (never the
- * password itself) and {@code VoicechatConnection.setGroup(Group)} performs no
- * password check, so the bridge is the sole enforcement point for app users.
- * Password-protected groups the bridge did not create (e.g. made by a Java SVC-mod
- * player) cannot be verified, so joining them is denied (fail closed).
+ * Verifies group passwords for app users. SVC's API exposes only {@link Group#hasPassword()}
+ * (never the password) and {@code VoicechatConnection.setGroup(Group)} performs no password
+ * check, so the bridge is the sole enforcement point for app users.
+ * For bridge-created groups the password is taken from {@link #passwords}; for groups created
+ * elsewhere (e.g. by a Java SVC-mod player) it is read reflectively from the SVC group impl.
+ * If the password cannot be determined by either route, the join is denied (fail closed).
  */
 public class GroupManager {
 
@@ -29,15 +31,43 @@ public class GroupManager {
 
     /**
      * Returns true if the provided password satisfies the group's password requirement.
-     * Fails closed: a password-protected group with no stored password (one the bridge
-     * did not create, so we cannot verify against it) is rejected rather than allowed,
-     * preventing app users from joining with an arbitrary/incorrect password.
+     * The expected password is the bridge-tracked one, or — for groups the bridge did not
+     * create — the SVC group's own password read via reflection. Fails closed: if neither
+     * route yields a password the join is denied, so app users can never join a protected
+     * group with an arbitrary/incorrect password.
      */
     public boolean checkPassword(Group group, String provided) {
         if (!group.hasPassword()) return true;
         String stored = passwords.get(group.getName());
-        if (stored == null) return false; // password-protected but unverifiable — deny
+        if (stored == null) stored = reflectPassword(group); // not bridge-created — read SVC's own
+        if (stored == null) return false;                    // couldn't determine — deny
         return stored.equals(provided != null ? provided : "");
+    }
+
+    /**
+     * Reads the plaintext password from SVC's internal group object via reflection. The API
+     * {@link Group} is a thin wrapper holding the real server group in a {@code group} field,
+     * which in turn has a {@code password} field. SVC exposes no API for this. Returns null if
+     * the password cannot be read (unexpected impl/obfuscation) — callers then fail closed.
+     *
+     * <p>Reflection technique adapted from SimpleVoice-Geyser by Theodore Meyer:
+     * <a href="https://github.com/TheodoreMeyer/SimpleVoice-Geyser/blob/master/core/src/main/java/io/github/theodoremeyer/simplevoicegeyser/core/managers/GroupManager.java#L155-L171">GroupManager.java (L155-171)</a>.
+     */
+    private static String reflectPassword(Group group) {
+        try {
+            Field groupField = group.getClass().getDeclaredField("group");
+            groupField.setAccessible(true);
+            Object groupObject = groupField.get(group);
+
+            Field passwordField = groupObject.getClass().getDeclaredField("password");
+            passwordField.setAccessible(true);
+            return (String) passwordField.get(groupObject);
+        } catch (Throwable e) {
+            Main.getInstance().getSLF4JLogger().warn(
+                    "Failed to reflect password of group \"{}\" ({}): {}",
+                    group.getName(), group.getId(), e.getMessage());
+            return null;
+        }
     }
 
     /** Serializes the group collection to a JSON array: [{name, hasPassword}, ...] */

@@ -83,9 +83,16 @@ class BridgeClient {
 
     fun sendJoinRoom(name: String, password: String?, groupType: GroupType? = null) {
         Log.d(TAG, "→ join_room name=$name hasPassword=${password != null} groupType=$groupType")
-        val pw = if (password.isNullOrBlank()) "" else ""","password":"${password.replace("\"", "\\\"")}""""
-        val gt = if (groupType != null) ""","groupType":"${groupType.wire}""" else ""
-        send("""{"type":"join_room","name":"${name.replace("\"", "\\\"")}"$pw$gt}""")
+        // Build with JSONObject so name/password/groupType are escaped correctly — hand-rolled
+        // string concatenation previously dropped the closing quote on groupType, producing
+        // invalid JSON that the plugin silently rejected (so "create" never reached the server).
+        val json = JSONObject().apply {
+            put("type", "join_room")
+            put("name", name)
+            if (!password.isNullOrBlank()) put("password", password)
+            if (groupType != null) put("groupType", groupType.wire)
+        }
+        send(json.toString())
     }
 
     fun sendLeaveRoom() {

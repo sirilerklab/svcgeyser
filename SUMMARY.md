@@ -55,7 +55,7 @@ cd plugin && ./gradlew build
 | `network/AppSession.java` | Per-connection state machine + audio sender/listener |
 | `auth/XboxAuthVerifier.java` | Validates XSTS token, extracts XUID |
 | `player/XuidPlayerMap.java` | Maps Floodgate XUID ↔ Java UUID for online players |
-| `group/GroupManager.java` | Tracks group passwords; serialises group list to JSON |
+| `group/GroupManager.java` | Verifies group passwords (tracked + reflection); serialises group list to JSON |
 
 ### Config (`plugin/src/main/resources/config.yml`)
 
@@ -109,17 +109,50 @@ If our handler runs first, `getConnectionOf()` returns null.
 A player in a voice group should hear **only** their group — never outside
 proximity. Two mechanisms enforce this:
 
-1. **Group type = `ISOLATED`.** Bridge-created rooms (`handleJoinRoom` in
-   `BridgeServer.java`) build groups with `Group.Type.ISOLATED`. `NORMAL`/`OPEN`
-   groups still let members hear outside proximity, which broke isolation
-   (FIX.md "issue group 2"). Groups created by **Java players via the SVC mod
-   UI** are client-side — the plugin can't force their type, so those users must
-   manually pick "Isolated".
+1. **Group type.** The app's "Create channel" UI (both the main screen and the
+   bubble overlay) lets the user pick the SVC group type — **Normal / Open /
+   Isolated**, defaulting to **Isolated**. The choice is sent as `groupType` and
+   `handleJoinRoom` (`BridgeServer.java`) builds the group with it. Only
+   `ISOLATED` fully blocks outside proximity audio; `NORMAL`/`OPEN` intentionally
+   let members still hear nearby players (FIX.md "issue group 2"). Groups created
+   by **Java players via the SVC mod UI** are client-side — the plugin can't force
+   their type, so those users must manually pick "Isolated".
 2. **Downlink filter for Bedrock listeners.** SVC's `PlayerAudioListener` fires
    before the client-side group filter, so `AppSession.groupAllows()` drops any
    packet whose sender's room differs from the listener's room (both read from
    volatile `currentRoom`, resolved live per packet). This covers what a Bedrock
    **app** user hears; ISOLATED groups cover what Java mod users hear.
+
+### Group Passwords
+
+SVC's API never exposes a group's password (`Group` has only `hasPassword()`) and
+`setGroup(Group)` performs no password check, so **the bridge is the sole
+enforcement point** for app users. `GroupManager.checkPassword` resolves the
+expected password from one of two sources, then compares it to what the user typed:
+
+1. **Bridge-created groups** → the password recorded in `track()` at create time.
+2. **Externally-created groups** (made by a Java SVC-mod player) → SVC's own
+   password, read **via reflection** (`reflectPassword`): unwrap the API `Group`'s
+   internal `group` field, then its `password` field. (Technique credited in-code
+   to TheodoreMeyer/SimpleVoice-Geyser.)
+
+If neither route yields a password it **fails closed** (join denied), so an app
+user can never join a protected group with a wrong/empty password. Field names are
+SVC-version-specific (2.6.13); if a future build renames them, reflection fails
+safely (deny + warning log) rather than allowing a bypass.
+
+### Channel Creation Reliability
+
+- **App side** (`BridgeClient.sendJoinRoom`) builds the `join_room` message with
+  `JSONObject` rather than hand-rolled string concatenation — the old code dropped
+  the closing quote on `groupType`, producing invalid JSON the plugin silently
+  rejected, so **creating a channel never reached the server**.
+- **Plugin side** (`handleJoinRoom`) runs all SVC group mutation (create / join /
+  `setGroup` and the events it fires) on the **Bukkit main thread** inside a
+  `try/catch`. SVC group creation off the main thread can throw, and an uncaught
+  exception there is swallowed by the WebSocket library — leaving the app with no
+  reply. The handler now always responds (`join_ok` or a `join_fail` reason,
+  including `group_error` on unexpected failure), and logs the stack trace.
 
 ### Dependencies (all `compileOnly` — provided by server at runtime)
 
@@ -197,9 +230,12 @@ implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))
 | App → Plugin | `auth` | `xstsHeader` |
 | Plugin → App | `auth_ok` | `sessionToken`, `xuid` |
 | Plugin → App | `player_joined_game` | `javaUuid` |
-| Plugin → App | `group_update` | `groups[]` |
-| App → Plugin | `join_room` | `name`, `password?` |
+| Plugin → App | `status` | `inGame`, `javaUuid?`, `currentRoom?`, `groups[]` |
+| Plugin → App | `group_update` | `groups[]` (each: `name`, `hasPassword`, `type`) |
+| App → Plugin | `join_room` | `name`, `password?`, `groupType?` (`normal`/`open`/`isolated`) |
 | App → Plugin | `leave_room` | — |
+| Plugin → App | `join_ok` / `join_fail` | `reason` (`wrong_password`, `invalid_group_type`, `group_error`, …) |
+| Plugin → App | `room_changed` | `room` (null = left) |
 | Plugin → App | `uplink_rejected` | `reason` |
 
 **Binary frames**
@@ -242,7 +278,7 @@ SYSTEM_ALERT_WINDOW (bubble overlay — requested at runtime)
 | `Concentus.jar` must be placed manually | See path above |
 | `uplink_rejected` not handled in app | App keeps sending frames; plugin has already unregistered sender |
 | Uplink fix is still speculative | If uplink still fails after deploy, check Minecraft console for "Audio sender registered" or "Uplink frame dropped" log lines |
-| No Phase 6 yet | Phase 6 (whisper, group passwords from app, etc.) not started |
+| Partial Phase 6 | Group create/join with selectable type + password verification done; whisper and other Phase 6 items not started |
 
 ---
 
@@ -254,6 +290,8 @@ SYSTEM_ALERT_WINDOW (bubble overlay — requested at runtime)
 [SVCGeyser] Auth OK — xuid=... already in-game    ← auth path
 [SVCGeyser] Audio listener registered — xuid=...  ← downlink ready
 [SVCGeyser] Audio sender registered — xuid=...    ← uplink ready ✅
+[SVCGeyser] xuid=... join_room name="..." hasPassword=... groupType=...  ← create/join received
+[SVCGeyser] xuid=... created room "..." type=... (password=...)          ← group created ✅
 [SVCGeyser] registerSender — no SVC VoicechatConnection yet  ← timing race (will retry)
 [SVCGeyser] Uplink frame dropped — audioSender not ready     ← sender never registered ❌
 [SVCGeyser] Uplink rejected — ... mod installed             ← Bedrock player has SVC mod

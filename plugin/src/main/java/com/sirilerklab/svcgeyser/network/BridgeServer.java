@@ -246,6 +246,8 @@ public class BridgeServer extends WebSocketServer {
                     connection.setGroup(existing);
                     log().info("xuid={} joined room \"{}\"", session.getXuid(), name);
                 } else {
+                    log().info("xuid={} create room \"{}\" type={} (password={})",
+                            session.getXuid(), name, groupType, !password.isEmpty());
                     // Create a new group with the provided password and type.
                     String pw = (password != null && !password.isBlank()) ? password : "";
                     Group.Builder builder = api.groupBuilder()
