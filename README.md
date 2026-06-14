@@ -1,6 +1,6 @@
 # SVCGeyser
 
-Bedrock voice-chat bridge for **PaperMC** servers running **GeyserMC**, **Floodgate**, and **Simple Voice Chat (SVC)**.
+Bedrock voice-chat bridge for **PaperMC** servers running **GeyserMC**, **Floodgate**, and **Simple Voice Chat (SVC)** — with **WSS (TLS)** encryption between the Android app and server.
 
 **Latest release:** [v0.0.1-rc.1](https://github.com/sirilerklab/svcgeyser/releases/tag/v0.0.1-rc.1) — download the plugin JAR and Android APK from [GitHub Releases](https://github.com/sirilerklab/svcgeyser/releases).
 
@@ -17,7 +17,7 @@ Bedrock players install a companion **Android app**. Their microphone audio is i
 **XUID is the join key.** The app proves identity with a Microsoft / Xbox token. Floodgate maps that XUID to the in-game Bedrock player. Gamertag strings are never trusted.
 
 ```
-Android app  ── WebSocket (JSON + Opus) ──  SVCGeyser plugin  ── SVC API ──  Java SVC mod clients
+Android app  ── WSS (TLS + JSON + Opus) ──  SVCGeyser plugin  ── SVC API ──  Java SVC mod clients
  (Kotlin)                                      (Paper)              (UDP)
 ```
 
@@ -44,6 +44,7 @@ Audio format (fixed by SVC): **Opus, 48 kHz mono, 20 ms frames** (960 samples pe
 |---------|---------|
 | **Microsoft sign-in** | One-time Xbox account login; session saved until refresh token expires |
 | **Saved servers** | Store server IP, port, and label; tap to connect or use **Quick connect** |
+| **WSS (TLS) connection** | Connects with `wss://` — voice and signaling are encrypted in transit |
 | **Auto-reconnect** | Exponential backoff (1 s → 30 s); rejoins your voice channel after reconnect |
 | **Mute / deafen / speaker** | Control bar on the room screen; switch between earpiece and speaker |
 | **Voice activity detection** | Uplink sends audio only when you speak (with a short hang time so words aren't clipped) |
@@ -56,7 +57,8 @@ Audio format (fixed by SVC): **Opus, 48 kHz mono, 20 ms frames** (960 samples pe
 | Feature | Details |
 |---------|---------|
 | **XUID authentication** | App proves identity with an Xbox token; Floodgate links XUID to the in-game Bedrock player |
-| **WebSocket bridge** | JSON signaling + Opus binary frames over `ws://` (default port `9000`) |
+| **WSS / TLS encryption** | Bridge serves `wss://` with a self-signed certificate; auto-generated on first run (`cert.p12`) |
+| **WebSocket bridge** | JSON signaling + Opus binary frames over **WSS** (default port `9000`) |
 | **Live group sync** | Channel list updates when Java players create, join, or leave SVC groups |
 | **Auto JWT secret** | Generates a secure `jwt-secret` on first run if none is configured |
 | **`/svc status`** | Operator command to inspect app sessions, voice state, and audio sender/listener status |
@@ -90,18 +92,27 @@ Download from [v0.0.1-rc.1](https://github.com/sirilerklab/svcgeyser/releases/ta
 1. Download [`svcgeyser-0.0.1-rc.1.jar`](https://github.com/sirilerklab/svcgeyser/releases/download/v0.0.1-rc.1/svcgeyser-0.0.1-rc.1.jar).
 2. Copy into your Paper server's `plugins/` folder (requires GeyserMC, Floodgate, Simple Voice Chat).
 3. Restart the server and edit `plugins/SVCGeyser/config.yml`:
-   - Set `jwt-secret` to a long random value (never commit this).
+   - Leave `jwt-secret` and `keystore-password` blank on first run — the plugin generates both automatically.
    - Confirm `ws-port` (default 9000) is reachable from player phones.
 
    ```yaml
    ws-port: 9000
-   jwt-secret: "change-me-to-a-long-random-secret"
+   jwt-secret: ""           # auto-generated on first run if blank
+   keystore-password: ""    # auto-generated on first run if blank
    ```
+
+   On first start the plugin also creates TLS files in `plugins/SVCGeyser/`:
+
+   | File | Purpose |
+   |------|---------|
+   | `cert.p12` | PKCS12 keystore used by the WSS server |
+   | `cert.pem` / `cert.key` | Exported certificate and private key (PEM) |
 
    On success, the console shows:
 
    ```
    [SVCGeyser] SVC API acquired — bridge ready
+   [SVCGeyser] WebSocket TLS (WSS) enabled — PKCS12 keystore in SVCGeyser (cert.pem / cert.key exported)
    [SVCGeyser] Bridge WS server listening on port 9000
    ```
 
@@ -112,7 +123,20 @@ Download from [v0.0.1-rc.1](https://github.com/sirilerklab/svcgeyser/releases/ta
 3. Open the APK and install (Android 7.0+ / API 24+).
 4. Grant **Microphone** and **Internet**. For the optional bubble overlay, enable **Display over other apps** manually — see [Enable bubble overlay](#enable-display-over-other-apps-bubble-overlay) (required on some phones due to protected access).
 5. Sign in with the same Microsoft account used on Bedrock via Geyser.
-6. Connect to `ws://<server-ip>:9000` (or your configured port).
+6. Connect to your server (IP/hostname + port `9000` by default). The app uses **`wss://`** — all traffic is TLS-encrypted.
+
+### WebSocket security (WSS)
+
+The bridge **always uses WSS** (WebSocket over TLS). On first run the plugin generates a **self-signed** RSA certificate and stores it in `plugins/SVCGeyser/cert.p12`.
+
+| What is encrypted | Signaling (JSON), session auth, and Opus audio frames |
+|-------------------|--------------------------------------------------------|
+| How the app connects | `wss://<server-ip>:<ws-port>` |
+| Certificate trust | Self-signed — the app trusts the bridge cert explicitly; **player identity is verified by Xbox auth**, not the TLS certificate |
+| Replacing the certificate | Replace `cert.p12` with your own PKCS12 keystore (same alias/password in `config.yml`), or use the exported `cert.pem` / `cert.key` behind a reverse proxy |
+
+> [!NOTE]
+> TLS encrypts traffic between the phone and your server. It does **not** replace Xbox authentication — the app still proves identity with a Microsoft / Xbox token after the secure socket is open.
 
 ### Build locally (maintainers)
 
@@ -135,7 +159,7 @@ After connecting in the app:
 
 Voice channels in the app map 1:1 to SVC groups on the server. When joining a Java-created password-protected group, enter the password in the app.
 
-Use your server's public IP or hostname in the app — not `localhost`, unless testing on the same machine. For public internet deployment over TLS, put a reverse proxy in front and use `wss://` (see [Limitations](#limitations)).
+Use your server's public IP or hostname in the app — not `localhost`, unless testing on the same machine.
 
 ---
 
@@ -227,13 +251,13 @@ If the bubble still does not show, disable background restrictions: **Settings �
 | Limitation | Details |
 |------------|---------|
 | **Android only** | No iOS companion app yet. |
-| **Plain WebSocket** | App uses `ws://` only. `wss://` requires an external reverse proxy. |
+| **Self-signed TLS certificate** | WSS uses a plugin-generated self-signed cert by default — encrypted, but not signed by a public CA. Replace `cert.p12` or terminate TLS at a reverse proxy for production. |
 | **Paper 1.21.4** | Other server versions are untested. |
 | **SVC mod on Bedrock client** | If a Bedrock player also has the SVC mod installed, bridge uplink is rejected (`uplink_rejected — mod installed`). |
 | **Java-created group types** | Groups created in-game via the SVC mod UI use whatever type the Java player picks. Only **Isolated** fully blocks outside proximity audio. The app defaults to Isolated when creating channels. |
 | **Group password reflection** | Password checks for Java-created protected groups rely on SVC internal fields (v2.6.13). A future SVC update may break this until the plugin is updated. |
 | **Manual Concentus setup** | Only required when building the app from source — not needed for the release APK. |
-| **Rate limiting & metrics** | Not implemented yet (planned Phase 6). |
+| **Rate limiting & metrics** | Not implemented yet. |
 
 ---
 
@@ -260,7 +284,8 @@ If the bubble still does not show, disable background restrictions: **Settings �
 | Stuck on **Waiting for player** | Bedrock player must be online on the same server with the **same Microsoft account** used in the app. Geyser + Floodgate must be running. |
 | Java players can't hear Bedrock | Look for `Audio sender registered` in console. If you see `Uplink frame dropped`, SVC sender never registered. |
 | Bedrock can't hear Java | Look for `Audio listener registered`. Check mic permission and mute/deafen in the app. |
-| WebSocket fails | Verify `ws-port` is open and reachable from the phone. Confirm `jwt-secret` is set. |
+| WebSocket fails | Verify `ws-port` is open and reachable from the phone. Check console for `WebSocket TLS (WSS) enabled`. Confirm `jwt-secret` is set in `config.yml`. |
+| WSS / TLS errors | Ensure `cert.p12` exists in `plugins/SVCGeyser/` and was not corrupted. Delete `cert.p12` and restart to regenerate (players must reconnect). |
 | Bubble overlay blocked | See [Enable "Display over other apps"](#enable-display-over-other-apps-bubble-overlay) — allow restricted settings, then enable overlay for your phone brand. |
 
 Full protocol and design details: [`docs/DOCUMENT.md`](docs/DOCUMENT.md) · [`docs/SUMMARY.md`](docs/SUMMARY.md)
