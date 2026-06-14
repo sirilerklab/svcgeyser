@@ -69,11 +69,11 @@ class VoiceService : Service() {
         val notification = buildNotification(voiceActive, reconnecting)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-            )
+            val type = if (voiceActive)
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            else
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            startForeground(NOTIFICATION_ID, notification, type)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
