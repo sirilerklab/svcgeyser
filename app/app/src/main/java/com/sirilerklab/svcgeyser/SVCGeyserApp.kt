@@ -4,9 +4,8 @@ import android.app.Application
 import com.sirilerklab.svcgeyser.diag.CrashReporter
 
 /**
- * Custom Application so the crash reporter is installed before any Activity or Service
- * starts — the audio crash happens during voice sessions driven by services, when
- * MainActivity may not be in the foreground.
+ * Custom Application so the crash reporter is installed before any Activity or Service starts —
+ * crashes can happen during voice sessions driven by services, when MainActivity is not foreground.
  */
 class SVCGeyserApp : Application() {
     override fun onCreate() {

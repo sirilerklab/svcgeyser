@@ -14,10 +14,12 @@ softdepend:
   - voicechat
 commands:
   svc:
-    description: SVCGeyser bridge status
-    usage: /svc status [player]
-    permission: svcgeyser.status
+    description: SVCGeyser bridge status and admin
+    usage: /svc <status [player]|reload>
 permissions:
   svcgeyser.status:
     description: View SVCGeyser bridge player status
+    default: op
+  svcgeyser.reload:
+    description: Reload the SVCGeyser configuration
     default: op

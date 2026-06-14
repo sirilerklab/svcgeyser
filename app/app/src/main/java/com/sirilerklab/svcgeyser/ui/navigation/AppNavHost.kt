@@ -2,6 +2,7 @@ package com.sirilerklab.svcgeyser.ui.navigation
 
 import android.content.Intent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
@@ -25,6 +26,7 @@ import com.sirilerklab.svcgeyser.ui.screens.LoginScreen
 import com.sirilerklab.svcgeyser.ui.screens.RoomListScreen
 import com.sirilerklab.svcgeyser.ui.screens.ServerConnectScreen
 import com.sirilerklab.svcgeyser.ui.viewmodel.AppViewModel
+import com.sirilerklab.svcgeyser.ui.viewmodel.CrashUploadStatus
 import com.sirilerklab.svcgeyser.ui.viewmodel.LoginStatus
 
 @Composable
@@ -34,7 +36,13 @@ fun AppNavHost(modifier: Modifier = Modifier) {
     val state by vm.ui.collectAsState()
 
     state.lastCrash?.let { crash ->
-        CrashReportDialog(report = crash, onDismiss = vm::clearLastCrash)
+        CrashReportDialog(
+            report = crash,
+            uploadConfigured = state.crashUploadConfigured,
+            uploadStatus = state.crashUpload,
+            onSend = vm::sendCrashReport,
+            onDismiss = vm::clearLastCrash,
+        )
     }
 
     if (!state.authReady) {
@@ -90,34 +98,48 @@ fun AppNavHost(modifier: Modifier = Modifier) {
     }
 }
 
-/** Shows the stack trace captured from the previous crash, with a share action. */
+/** Shows the previous crash's stack trace with an option to upload it to the crash-log service. */
 @Composable
-private fun CrashReportDialog(report: String, onDismiss: () -> Unit) {
-    val context = LocalContext.current
+private fun CrashReportDialog(
+    report: String,
+    uploadConfigured: Boolean,
+    uploadStatus: CrashUploadStatus,
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("App crashed last time") },
         text = {
-            Text(
-                text = report,
-                modifier = Modifier
-                    .heightIn(max = 300.dp)
-                    .verticalScroll(rememberScrollState()),
-            )
+            Column {
+                when (uploadStatus) {
+                    is CrashUploadStatus.Sending ->
+                        Text("Sending crash report…")
+                    is CrashUploadStatus.Sent ->
+                        Text("Report sent ✓\n${uploadStatus.url}")
+                    is CrashUploadStatus.Failed ->
+                        Text("Upload failed: ${uploadStatus.message}")
+                    CrashUploadStatus.Idle ->
+                        if (!uploadConfigured) Text("Crash uploading is not configured in this build.")
+                }
+                Text(
+                    text = report,
+                    modifier = Modifier
+                        .heightIn(max = 260.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
+            }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val share = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_SUBJECT, "SVCGeyser crash report")
-                    putExtra(Intent.EXTRA_TEXT, report)
+            val sent = uploadStatus is CrashUploadStatus.Sent
+            val sending = uploadStatus is CrashUploadStatus.Sending
+            if (uploadConfigured && !sent) {
+                TextButton(onClick = onSend, enabled = !sending) {
+                    Text(if (uploadStatus is CrashUploadStatus.Failed) "Retry" else "Send report")
                 }
-                context.startActivity(
-                    Intent.createChooser(share, "Share crash report")
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-                onDismiss()
-            }) { Text("Share") }
+            } else {
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Dismiss") }

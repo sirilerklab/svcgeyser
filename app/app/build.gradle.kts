@@ -35,6 +35,19 @@ android {
             ?: System.getenv("LIVE_OAUTH_CLIENT_ID")
             ?: ""
         buildConfigField("String", "LIVE_OAUTH_CLIENT_ID", "\"$liveClientId\"")
+
+        // Crash-log upload endpoint (Cloudflare Worker). Configure via gradle.local.properties
+        // or env; left blank disables uploading (the in-app crash dialog still falls back to share).
+        val crashUploadUrl = project.findProperty("crashUploadUrl") as String?
+            ?: localGradleProperty("crashUploadUrl")
+            ?: System.getenv("CRASH_UPLOAD_URL")
+            ?: ""
+        val crashUploadApiKey = project.findProperty("crashUploadApiKey") as String?
+            ?: localGradleProperty("crashUploadApiKey")
+            ?: System.getenv("CRASH_UPLOAD_API_KEY")
+            ?: ""
+        buildConfigField("String", "CRASH_UPLOAD_URL", "\"$crashUploadUrl\"")
+        buildConfigField("String", "CRASH_UPLOAD_API_KEY", "\"$crashUploadApiKey\"")
     }
 
     signingConfigs {

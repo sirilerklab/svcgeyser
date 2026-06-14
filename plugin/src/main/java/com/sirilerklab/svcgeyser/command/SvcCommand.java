@@ -26,14 +26,25 @@ public class SvcCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        String sub = args.length > 0 ? args[0].toLowerCase() : "status";
+
+        if (sub.equals("reload")) {
+            if (!sender.hasPermission("svcgeyser.reload")) {
+                sender.sendMessage("§cYou don't have permission to reload SVCGeyser.");
+                return true;
+            }
+            Main.getInstance().reloadPluginConfig();
+            sender.sendMessage("§aSVCGeyser configuration reloaded. §7(ws-port changes require a restart.)");
+            return true;
+        }
+
         if (!sender.hasPermission("svcgeyser.status")) {
             sender.sendMessage("§cYou don't have permission to use this command.");
             return true;
         }
 
-        String sub = args.length > 0 ? args[0].toLowerCase() : "status";
         if (!sub.equals("status")) {
-            sender.sendMessage("§eUsage: /svc status [player]");
+            sender.sendMessage("§eUsage: /svc <status [player]|reload>");
             return true;
         }
 
@@ -137,11 +148,14 @@ public class SvcCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (!sender.hasPermission("svcgeyser.status")) return List.of();
         if (args.length == 1) {
-            return filter(List.of("status"), args[0]);
+            List<String> subs = new ArrayList<>();
+            if (sender.hasPermission("svcgeyser.status")) subs.add("status");
+            if (sender.hasPermission("svcgeyser.reload")) subs.add("reload");
+            return filter(subs, args[0]);
         }
-        if (args.length == 2 && args[0].equalsIgnoreCase("status")) {
+        if (args.length == 2 && args[0].equalsIgnoreCase("status")
+                && sender.hasPermission("svcgeyser.status")) {
             return filter(
                     Bukkit.getOnlinePlayers().stream().map(Player::getName).collect(Collectors.toList()),
                     args[1]

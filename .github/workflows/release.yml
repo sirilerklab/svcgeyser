@@ -6,6 +6,9 @@
 #   KEY_ALIAS            — signing key alias
 #   KEY_PASSWORD         — key password
 #   LIVE_OAUTH_CLIENT_ID — Microsoft OAuth public client ID
+# Optional (crash-log upload; leave unset to disable uploading in release builds):
+#   CRASH_UPLOAD_URL     — crash-log Worker endpoint, e.g. https://crash-log-upload.<sub>.workers.dev/upload
+#   CRASH_UPLOAD_API_KEY — Bearer API key for the crash-log Worker
 #
 # Generate keystore:
 #   keytool -genkey -v -keystore release.keystore -alias svcgeyser \
@@ -146,8 +149,11 @@ jobs:
 
       - name: Generate checksum
         run: |
-          JAR="plugin/build/libs/svcgeyser-${{ needs.validate.outputs.version }}.jar"
-          sha256sum "$JAR" | tee "plugin/build/libs/svcgeyser-${{ needs.validate.outputs.version }}.jar.sha256"
+          VERSION="${{ needs.validate.outputs.version }}"
+          JAR="plugin/build/libs/svcgeyser-${VERSION}.jar"
+          cp "$JAR" "plugin/build/libs/svcgeyser.jar"
+          sha256sum "$JAR" | tee "plugin/build/libs/svcgeyser-${VERSION}.jar.sha256"
+          sha256sum "plugin/build/libs/svcgeyser.jar" | tee "plugin/build/libs/svcgeyser.jar.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -155,6 +161,8 @@ jobs:
           path: |
             plugin/build/libs/svcgeyser-${{ needs.validate.outputs.version }}.jar
             plugin/build/libs/svcgeyser-${{ needs.validate.outputs.version }}.jar.sha256
+            plugin/build/libs/svcgeyser.jar
+            plugin/build/libs/svcgeyser.jar.sha256
 
   build-apk:
     needs: [validate, secret-scan]
@@ -189,12 +197,16 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           LIVE_OAUTH_CLIENT_ID: ${{ secrets.LIVE_OAUTH_CLIENT_ID }}
+          CRASH_UPLOAD_URL: ${{ secrets.CRASH_UPLOAD_URL }}
+          CRASH_UPLOAD_API_KEY: ${{ secrets.CRASH_UPLOAD_API_KEY }}
           GRADLE_OPTS: "-Xmx4096m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
         run: |
           ./gradlew assembleRelease \
             -PversionName=${{ needs.validate.outputs.version }} \
             -PversionCode=${{ needs.validate.outputs.version_code }} \
-            -PliveOAuthClientId="$LIVE_OAUTH_CLIENT_ID"
+            -PliveOAuthClientId="$LIVE_OAUTH_CLIENT_ID" \
+            -PcrashUploadUrl="$CRASH_UPLOAD_URL" \
+            -PcrashUploadApiKey="$CRASH_UPLOAD_API_KEY"
 
       - name: Rename APK and generate checksum
         run: |
@@ -202,7 +214,9 @@ jobs:
           SRC="app/app/build/outputs/apk/release/app-release.apk"
           DST="app/app/build/outputs/apk/release/svcgeyser-${VERSION}.apk"
           cp "$SRC" "$DST"
+          cp "$SRC" "app/app/build/outputs/apk/release/svcgeyser.apk"
           sha256sum "$DST" | tee "app/app/build/outputs/apk/release/svcgeyser-${VERSION}.apk.sha256"
+          sha256sum "app/app/build/outputs/apk/release/svcgeyser.apk" | tee "app/app/build/outputs/apk/release/svcgeyser.apk.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -210,6 +224,8 @@ jobs:
           path: |
             app/app/build/outputs/apk/release/svcgeyser-${{ needs.validate.outputs.version }}.apk
             app/app/build/outputs/apk/release/svcgeyser-${{ needs.validate.outputs.version }}.apk.sha256
+            app/app/build/outputs/apk/release/svcgeyser.apk
+            app/app/build/outputs/apk/release/svcgeyser.apk.sha256
 
   release:
     needs: [validate, build-plugin, build-apk]
@@ -265,5 +281,9 @@ jobs:
           files: |
             dist/plugin/svcgeyser-${{ needs.validate.outputs.version }}.jar
             dist/plugin/svcgeyser-${{ needs.validate.outputs.version }}.jar.sha256
+            dist/plugin/svcgeyser.jar
+            dist/plugin/svcgeyser.jar.sha256
             dist/apk/svcgeyser-${{ needs.validate.outputs.version }}.apk
             dist/apk/svcgeyser-${{ needs.validate.outputs.version }}.apk.sha256
+            dist/apk/svcgeyser.apk
+            dist/apk/svcgeyser.apk.sha256
