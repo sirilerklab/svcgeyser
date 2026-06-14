@@ -314,6 +314,6 @@ cd app    && ./gradlew test         # unit tests
 
 ## License & credits
 
-- **Simple Voice Chat** — [maxhenkel](https://github.com/MaxHenkel) / [modrepo.de API](https://voicechat.modrepo.de)
-- **GeyserMC / Floodgate** — [GeyserMC](https://github.com/GeyserMC)
+- **Simple Voice Chat** — [maxhenkel](https://github.com/henkelmax/simple-voice-chat) / [modrepo.de API](https://voicechat.modrepo.de)
+- **GeyserMC / Floodgate** — [GeyserMC](https://github.com/GeyserMC/Geyser) / [Floodgate](https://github.com/GeyserMC/Floodgate)
 - **Concentus** — pure-Java Opus ([lostromb/concentus](https://github.com/lostromb/concentus))

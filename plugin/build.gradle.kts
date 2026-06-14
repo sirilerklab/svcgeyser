@@ -42,6 +42,7 @@ tasks.shadowJar {
     relocate("org.bouncycastle", "com.sirilerklab.svcgeyser.libs.bc")
     // BouncyCastle jars are signed; their signature files break the merged fat jar.
     exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
+    exclude("META-INF/versions/*/OSGI-INF/**")
     archiveClassifier = ""
 }
 
