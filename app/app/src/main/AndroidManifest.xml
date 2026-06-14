@@ -35,9 +35,8 @@
 
         <!--
             OAuth2 redirect handler for the login.live.com Custom Tabs flow.
-            client_id = fdcde701-35a0-4e25-bf8c-3d66b0985f57
             redirect_uri = svcgeyser://auth
-            No signature hash or Azure portal registration needed — just the custom scheme.
+            Client ID is injected at build time via BuildConfig (see gradle.properties.example).
         -->
         <activity
             android:name=".auth.OAuthRedirectActivity"

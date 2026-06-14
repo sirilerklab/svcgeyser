@@ -1,6 +1,7 @@
 package com.sirilerklab.svcgeyser.ui.bubble
 
 import com.sirilerklab.svcgeyser.network.GroupInfo
+import com.sirilerklab.svcgeyser.network.GroupType
 import kotlinx.coroutines.flow.MutableStateFlow
 
 object BubbleController {
@@ -13,7 +14,7 @@ object BubbleController {
     val joinError   = MutableStateFlow<String?>(null)
 
     var onJoin: ((name: String, password: String?) -> Unit)? = null
-    var onCreateChannel: ((name: String, password: String?) -> Unit)? = null
+    var onCreateChannel: ((name: String, password: String?, groupType: GroupType) -> Unit)? = null
     var onLeave: (() -> Unit)? = null
     var onToggleMute: (() -> Unit)? = null
     var onToggleDeafen: (() -> Unit)? = null

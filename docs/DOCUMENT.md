@@ -156,9 +156,9 @@ Transport: WebSocket (TLS via reverse proxy / Cloudflare optional) for signaling
 
 Signaling messages (JSON, `type` field):
 - `auth` {xstsHeader} → `auth_ok` {sessionToken, xuid} | `auth_fail`
-- `status` → `status` {inGame: bool, javaUuid?, groups: [{name, hasPassword}]}
+- `status` → `status` {inGame: bool, javaUuid?, currentRoom?, groups: [{name, hasPassword, type}]}
 - `audio_state` {muted: bool, deafened: bool} — app reports local mute/deafen state
-- `join_room` {name, password?} → `join_ok` | `join_fail` {reason}
+- `join_room` {name, password?, groupType?} → `join_ok` | `join_fail` {reason} — `groupType` is `normal`|`open`|`isolated`, create-only; defaults to `isolated`
 - `leave_room` → `leave_ok`
 - server-push: `room_changed` {room: string|null} — player's SVC group membership changed (e.g. via Java mod UI)
 - server-push: `player_joined_game`, `player_left_game`, `group_update`, `room_changed`, `kicked`

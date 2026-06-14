@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.sirilerklab"
-version = "1.0-SNAPSHOT"
+version = project.findProperty("releaseVersion") as String? ?: "1.0-SNAPSHOT"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
@@ -25,6 +25,12 @@ dependencies {
     compileOnly("org.geysermc.floodgate:api:core-repackage-2.2.5-SNAPSHOT")
     implementation("org.java-websocket:Java-WebSocket:1.5.7") {
         exclude(group = "org.slf4j", module = "slf4j-api")
+    }
+}
+
+tasks.processResources {
+    filesMatching("plugin.yml") {
+        expand("version" to project.version)
     }
 }
 

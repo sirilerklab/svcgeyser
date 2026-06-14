@@ -22,11 +22,14 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.sirilerklab.svcgeyser.R
 import com.sirilerklab.svcgeyser.network.GroupInfo
+import com.sirilerklab.svcgeyser.network.GroupType
 import com.sirilerklab.svcgeyser.ui.bubble.BubbleController
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -624,6 +627,26 @@ class BubbleService : Service() {
         layout.addView(nameInput)
         layout.addView(pwInput)
 
+        val typeLabel = TextView(this).apply {
+            text = "Group type"
+            setPadding(0, (12 * dp).toInt(), 0, 0)
+        }
+        layout.addView(typeLabel)
+
+        // One radio button per GroupType (Normal / Open / Isolation), default Isolation.
+        val typeButtons = LinkedHashMap<Int, GroupType>()
+        val typeGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        GroupType.entries.forEach { type ->
+            val id = View.generateViewId()
+            typeButtons[id] = type
+            typeGroup.addView(RadioButton(this).apply {
+                this.id = id
+                text = type.label
+            })
+        }
+        typeButtons.entries.first { it.value == GroupType.ISOLATED }.let { typeGroup.check(it.key) }
+        layout.addView(typeGroup)
+
         showOverlayDialog(
             AlertDialog.Builder(this)
                 .setTitle("Create channel")
@@ -635,7 +658,8 @@ class BubbleService : Service() {
                         return@setPositiveButton
                     }
                     val pw = pwInput.text?.toString()?.trim().orEmpty()
-                    BubbleController.onCreateChannel?.invoke(name, pw.ifBlank { null })
+                    val type = typeButtons[typeGroup.checkedRadioButtonId] ?: GroupType.ISOLATED
+                    BubbleController.onCreateChannel?.invoke(name, pw.ifBlank { null }, type)
                 }
                 .setNegativeButton("Cancel", null),
         )

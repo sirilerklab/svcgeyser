@@ -104,6 +104,23 @@ If our handler runs first, `getConnectionOf()` returns null.
    can make SVC treat the player as "mod-connected", causing `canSend()` to
    return false and silently killing uplink
 
+### Group Isolation (rooms)
+
+A player in a voice group should hear **only** their group — never outside
+proximity. Two mechanisms enforce this:
+
+1. **Group type = `ISOLATED`.** Bridge-created rooms (`handleJoinRoom` in
+   `BridgeServer.java`) build groups with `Group.Type.ISOLATED`. `NORMAL`/`OPEN`
+   groups still let members hear outside proximity, which broke isolation
+   (FIX.md "issue group 2"). Groups created by **Java players via the SVC mod
+   UI** are client-side — the plugin can't force their type, so those users must
+   manually pick "Isolated".
+2. **Downlink filter for Bedrock listeners.** SVC's `PlayerAudioListener` fires
+   before the client-side group filter, so `AppSession.groupAllows()` drops any
+   packet whose sender's room differs from the listener's room (both read from
+   volatile `currentRoom`, resolved live per packet). This covers what a Bedrock
+   **app** user hears; ISOLATED groups cover what Java mod users hear.
+
 ### Dependencies (all `compileOnly` — provided by server at runtime)
 
 | Artifact | Version |

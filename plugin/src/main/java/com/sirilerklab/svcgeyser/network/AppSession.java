@@ -1,6 +1,7 @@
 package com.sirilerklab.svcgeyser.network;
 
 import com.sirilerklab.svcgeyser.Main;
+import de.maxhenkel.voicechat.api.Group;
 import de.maxhenkel.voicechat.api.VoicechatConnection;
 import de.maxhenkel.voicechat.api.VoicechatServerApi;
 import de.maxhenkel.voicechat.api.audiolistener.PlayerAudioListener;
@@ -45,6 +46,10 @@ public class AppSession {
     public boolean isDeafened()              { return deafened; }
     public void    setDeafened(boolean deafened) { this.deafened = deafened; }
 
+    public WebSocket getConnection()           { return conn; }
+    public boolean hasAudioSender()            { return audioSender != null; }
+    public boolean hasAudioListener()          { return audioListener != null; }
+
     public void send(String json) {
         if (conn.isOpen()) conn.send(json);
     }
@@ -60,10 +65,48 @@ public class AppSession {
         if (api == null) return;
         audioListener = api.playerAudioListenerBuilder()
                 .setPlayer(playerUuid)
-                .setPacketListener(packet -> sendBinary(AudioFrameSerializer.serialize(packet)))
+                .setPacketListener(packet -> {
+                    // PlayerAudioListener fires before SVC's client-side group filter.
+                    // Enforce group isolation using currentRoom (volatile — reflects setGroup
+                    // immediately on all threads, avoiding any API-level caching lag).
+                    if (!groupAllows(api, packet.getSender())) return;
+                    sendBinary(AudioFrameSerializer.serialize(packet));
+                })
                 .build();
         api.registerAudioListener(audioListener);
         log().info("Audio listener registered — xuid={} uuid={}", xuid, playerUuid);
+    }
+
+    /**
+     * Returns true if a packet from {@code senderUuid} should be forwarded to this session.
+     * Rules (mirrors what the SVC mod does client-side):
+     *   - Neither in a group  → allow (normal proximity)
+     *   - Only one is in a group → block (groups are isolated from proximity)
+     *   - Both in groups       → allow only if same group
+     */
+    private boolean groupAllows(VoicechatServerApi api, UUID senderUuid) {
+        String myRoom     = currentRoom;                       // volatile read — authoritative
+        String senderRoom = resolveSenderRoom(api, senderUuid);
+
+        if (myRoom == null && senderRoom == null) return true;   // both proximity → allow
+        if (myRoom == null || senderRoom == null) return false;  // one in group, other not → block
+        return myRoom.equals(senderRoom);                        // both in groups → same group only
+    }
+
+    /**
+     * Resolves the sender's current room. For app-bridged (Bedrock) senders we read their
+     * AppSession's volatile {@code currentRoom} directly, so the check reflects join/leave
+     * immediately. For Java SVC-mod senders we fall back to the SVC connection's group.
+     */
+    private static String resolveSenderRoom(VoicechatServerApi api, UUID senderUuid) {
+        if (senderUuid == null) return null;
+        AppSession senderSession = Main.getInstance().getBridgeServer().sessionForPlayer(senderUuid);
+        if (senderSession != null) return senderSession.getCurrentRoom();
+        VoicechatConnection senderConn = api.getConnectionOf(senderUuid);
+        if (senderConn != null && senderConn.getGroup() != null) {
+            return senderConn.getGroup().getName();
+        }
+        return null;
     }
 
     public void unregisterListener() {

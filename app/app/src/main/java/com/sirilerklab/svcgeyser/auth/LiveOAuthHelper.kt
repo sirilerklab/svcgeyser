@@ -1,5 +1,6 @@
 package com.sirilerklab.svcgeyser.auth
 
+import com.sirilerklab.svcgeyser.BuildConfig
 import android.app.Activity
 import android.net.Uri
 import android.util.Base64
@@ -19,7 +20,6 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "SVCGeyser.Auth"
 
-private const val CLIENT_ID    = "fdcde701-35a0-4e25-bf8c-3d66b0985f57"
 private const val REDIRECT_URI = "svcgeyser://auth"
 private const val AUTH_URL     = "https://login.live.com/oauth20_authorize.srf"
 private const val TOKEN_URL    = "https://login.live.com/oauth20_token.srf"
@@ -41,12 +41,23 @@ object LiveOAuthHelper {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    private fun clientId(): String {
+        val id = BuildConfig.LIVE_OAUTH_CLIENT_ID
+        if (id.isBlank()) {
+            throw IllegalStateException(
+                "LIVE_OAUTH_CLIENT_ID is not configured. " +
+                    "Set liveOAuthClientId in app/gradle.properties for local builds."
+            )
+        }
+        return id
+    }
+
     suspend fun signIn(activity: Activity): MsaTokens {
         val verifier  = generateCodeVerifier()
         val challenge = generateCodeChallenge(verifier)
 
         val authUri = Uri.parse(AUTH_URL).buildUpon()
-            .appendQueryParameter("client_id",             CLIENT_ID)
+            .appendQueryParameter("client_id",             clientId())
             .appendQueryParameter("response_type",         "code")
             .appendQueryParameter("redirect_uri",          REDIRECT_URI)
             .appendQueryParameter("scope",                 SCOPES)
@@ -75,7 +86,7 @@ object LiveOAuthHelper {
         withContext(Dispatchers.IO) {
             val body = FormBody.Builder()
                 .add("grant_type",    "refresh_token")
-                .add("client_id",    CLIENT_ID)
+                .add("client_id",    clientId())
                 .add("refresh_token", refreshToken)
                 .add("scope",        SCOPES)
                 .build()
@@ -99,7 +110,7 @@ object LiveOAuthHelper {
     private fun exchangeCode(code: String, verifier: String): MsaTokens {
         val body = FormBody.Builder()
             .add("grant_type",    "authorization_code")
-            .add("client_id",    CLIENT_ID)
+            .add("client_id",    clientId())
             .add("code",         code)
             .add("redirect_uri", REDIRECT_URI)
             .add("code_verifier", verifier)

@@ -1,5 +1,6 @@
 package com.sirilerklab.svcgeyser;
 
+import com.sirilerklab.svcgeyser.command.SvcCommand;
 import com.sirilerklab.svcgeyser.group.GroupManager;
 import com.sirilerklab.svcgeyser.network.BridgeServer;
 import com.sirilerklab.svcgeyser.player.XuidPlayerMap;
@@ -35,6 +36,13 @@ public class Main extends JavaPlugin implements Listener {
         bridgeServer.start();
 
         getServer().getPluginManager().registerEvents(this, this);
+
+        var svcCmd = getCommand("svc");
+        if (svcCmd != null) {
+            SvcCommand executor = new SvcCommand();
+            svcCmd.setExecutor(executor);
+            svcCmd.setTabCompleter(executor);
+        }
 
         BukkitVoicechatService svc = getServer().getServicesManager().load(BukkitVoicechatService.class);
         if (svc != null) {

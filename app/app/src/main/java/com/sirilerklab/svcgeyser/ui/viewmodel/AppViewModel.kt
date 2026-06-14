@@ -16,6 +16,7 @@ import com.sirilerklab.svcgeyser.data.SavedServer
 import com.sirilerklab.svcgeyser.data.ServerRepository
 import com.sirilerklab.svcgeyser.network.BridgeClient
 import com.sirilerklab.svcgeyser.network.GroupInfo
+import com.sirilerklab.svcgeyser.network.GroupType
 import com.sirilerklab.svcgeyser.network.InboundMessage
 import com.sirilerklab.svcgeyser.service.BubbleService
 import com.sirilerklab.svcgeyser.service.VoiceService
@@ -42,9 +43,13 @@ sealed class LoginStatus {
 sealed class ConnectStatus {
     object Idle : ConnectStatus()
     object Connecting : ConnectStatus()
+    data class Reconnecting(val attemptDelayMs: Long) : ConnectStatus()
     data class Error(val message: String) : ConnectStatus()
     object Connected : ConnectStatus()
 }
+
+val ConnectStatus.isOnline: Boolean
+    get() = this is ConnectStatus.Connected
 
 data class AppUiState(
     val authReady: Boolean = false,
@@ -61,6 +66,7 @@ data class AppUiState(
     val isMuted: Boolean = false,
     val isDeafened: Boolean = false,
     val speakerOn: Boolean = false,
+    val showReconnected: Boolean = false,
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -87,6 +93,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var reconnectJob: Job? = null
     private var connectionGeneration = 0
     private var pendingJoinName: String? = null
+    private var lastRoomPassword: String? = null
+    private var savedRoom: String? = null
+    private var savedRoomPassword: String? = null
+    private var wasAudioActive = false
+    private var awaitingReconnect = false
 
     init {
         viewModelScope.launch {
@@ -101,7 +112,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         BubbleController.onJoin           = { name, pw -> joinRoom(name, pw) }
-        BubbleController.onCreateChannel  = { name, pw -> joinRoom(name, pw) }
+        BubbleController.onCreateChannel  = { name, pw, type -> joinRoom(name, pw, type) }
         BubbleController.onLeave          = { leaveRoom() }
         BubbleController.onToggleMute = { toggleMute() }
         BubbleController.onToggleDeafen = { toggleDeafen() }
@@ -202,6 +213,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         lastAddress = address
         lastPort = port
         reconnectDelayMs = 1_000L
+        awaitingReconnect = false
+        savedRoom = null
+        savedRoomPassword = null
+        wasAudioActive = false
         reconnectJob?.cancel()
         doConnect(session)
     }
@@ -209,6 +224,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnect() {
         connectionGeneration++
         reconnectJob?.cancel()
+        awaitingReconnect = false
+        savedRoom = null
+        savedRoomPassword = null
+        wasAudioActive = false
         statusPollJob?.cancel()
         messageJob?.cancel()
         stopAudioEngine()
@@ -227,7 +246,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             isMuted = false,
             isDeafened = false,
             speakerOn = false,
+            showReconnected = false,
         )
+    }
+
+    private fun handleTransientDisconnect(gen: Int) {
+        wasAudioActive = audioEngine != null
+        stopAudioEngine()
+        savedRoom = _ui.value.currentRoom ?: savedRoom
+        savedRoomPassword = lastRoomPassword
+        awaitingReconnect = true
+        VoiceService.updateConnectionState(ctx, reconnecting = true, voiceActive = false)
+        _ui.value = _ui.value.copy(
+            connectStatus = ConnectStatus.Reconnecting(reconnectDelayMs),
+            sessionToken = null,
+            currentRoom = null,
+        )
+        if (connectionGeneration == gen) scheduleReconnect()
     }
 
     private fun doConnect(session: XboxSession) {
@@ -243,14 +278,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             for (msg in client.messages) {
                 when (msg) {
                     is InboundMessage.AuthOk -> {
+                        val wasReconnect = awaitingReconnect
+                        awaitingReconnect = false
                         reconnectDelayMs = 1_000L
                         _ui.value = _ui.value.copy(
                             connectStatus = ConnectStatus.Connected,
                             sessionToken = msg.sessionToken,
+                            showReconnected = wasReconnect,
                         )
-                        VoiceService.startConnected(ctx)
+                        VoiceService.updateConnectionState(ctx, reconnecting = false, voiceActive = wasAudioActive)
                         client.sendStatus()
                         startStatusPolling(client)
+                        savedRoom?.let { room ->
+                            joinRoom(room, savedRoomPassword, null)
+                        }
                     }
                     is InboundMessage.AuthFail -> {
                         _ui.value = _ui.value.copy(
@@ -265,8 +306,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             inGame = msg.inGame,
                             javaUuid = msg.javaUuid,
                             groups = msg.groups,
+                            currentRoom = msg.currentRoom ?: _ui.value.currentRoom,
                         )
                         if (msg.inGame && !wasInGame) maybeAutoStartBubble()
+                        if (wasAudioActive && msg.inGame && audioEngine == null) {
+                            wasAudioActive = false
+                            startAudio()
+                        }
                     }
                     is InboundMessage.PlayerJoinedGame -> {
                         _ui.value = _ui.value.copy(inGame = true, javaUuid = msg.javaUuid)
@@ -280,7 +326,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             currentRoom = null,
                         )
                         stopAudioEngine()
-                        VoiceService.startConnected(ctx)
+                        VoiceService.updateConnectionState(ctx, reconnecting = false, voiceActive = false)
                     }
                     is InboundMessage.GroupUpdate -> {
                         _ui.value = _ui.value.copy(groups = msg.groups)
@@ -290,11 +336,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         _ui.value = _ui.value.copy(currentRoom = msg.room)
                     }
                     is InboundMessage.JoinOk -> {
-                        _ui.value = _ui.value.copy(currentRoom = pendingJoinName)
+                        pendingJoinName?.let { _ui.value = _ui.value.copy(currentRoom = it) }
                         pendingJoinName = null
+                        savedRoom = null
+                        savedRoomPassword = null
                     }
                     is InboundMessage.JoinFail -> {
-                        _ui.value = _ui.value.copy(joinError = msg.reason)
+                        _ui.value = _ui.value.copy(joinError = joinFailMessage(msg.reason))
                         pendingJoinName = null
                     }
                     is InboundMessage.LeaveOk -> {
@@ -303,25 +351,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     is InboundMessage.DownlinkFrame -> {
                         audioEngine?.handleDownlinkFrame(msg.bytes)
                     }
-                    is InboundMessage.Error -> {
-                        stopAudioEngine()
-                        _ui.value = _ui.value.copy(
-                            connectStatus = ConnectStatus.Error(msg.cause.message ?: "Connection error"),
-                            currentRoom = null,
-                        )
-                        if (connectionGeneration == gen) scheduleReconnect()
-                    }
-                    is InboundMessage.Closed -> {
-                        stopAudioEngine()
-                        _ui.value = _ui.value.copy(
-                            connectStatus = ConnectStatus.Idle,
-                            inGame = false,
-                            javaUuid = null,
-                            sessionToken = null,
-                            currentRoom = null,
-                        )
-                        if (connectionGeneration == gen) scheduleReconnect()
-                    }
+                    is InboundMessage.Error -> handleTransientDisconnect(gen)
+                    is InboundMessage.Closed -> handleTransientDisconnect(gen)
                     else -> Unit
                 }
             }
@@ -342,6 +373,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val session = _ui.value.xboxSession ?: return
         reconnectJob?.cancel()
         reconnectJob = viewModelScope.launch {
+            _ui.value = _ui.value.copy(connectStatus = ConnectStatus.Reconnecting(reconnectDelayMs))
+            VoiceService.updateConnectionState(ctx, reconnecting = true, voiceActive = false)
             delay(reconnectDelayMs)
             reconnectDelayMs = (reconnectDelayMs * 2).coerceAtMost(30_000L)
             doConnect(session)
@@ -390,17 +423,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---- Room actions ---------------------------------------------------
 
-    fun joinRoom(name: String, password: String?) {
+    fun joinRoom(name: String, password: String?, groupType: GroupType? = null) {
         pendingJoinName = name
-        bridgeClient?.sendJoinRoom(name, password)
+        if (!password.isNullOrBlank()) lastRoomPassword = password
+        bridgeClient?.sendJoinRoom(name, password, groupType)
     }
 
     fun leaveRoom() {
         bridgeClient?.sendLeaveRoom()
+        lastRoomPassword = null
     }
 
     fun clearJoinError() {
         _ui.value = _ui.value.copy(joinError = null)
+    }
+
+    /** Maps a server join_fail reason code to a user-facing message. */
+    private fun joinFailMessage(reason: String): String = when (reason) {
+        "wrong_password"     -> "Incorrect password"
+        "invalid_name"       -> "Invalid channel name"
+        "invalid_group_type" -> "Invalid channel type"
+        "not_in_game"        -> "You must be on the server to join a channel"
+        "no_svc_connection"  -> "Voice chat is not ready yet — try again"
+        "svc_unavailable"    -> "Voice chat is unavailable on this server"
+        "group_error"        -> "Couldn't create the channel — try again"
+        else                  -> "Couldn't join the channel ($reason)"
+    }
+
+    fun clearReconnected() {
+        _ui.value = _ui.value.copy(showReconnected = false)
     }
 
     // ---- Bubble ---------------------------------------------------------

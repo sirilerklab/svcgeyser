@@ -22,20 +22,24 @@ class VoiceService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "svcgeyser_voice"
         private const val EXTRA_VOICE_ACTIVE = "voiceActive"
+        private const val EXTRA_RECONNECTING = "reconnecting"
 
         /** Call when WebSocket connects (auth_ok). Keeps process alive in background. */
         fun startConnected(context: Context) {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, VoiceService::class.java).putExtra(EXTRA_VOICE_ACTIVE, false),
-            )
+            updateConnectionState(context, reconnecting = false, voiceActive = false)
         }
 
         /** Call when mic/audio starts. Updates notification to "voice active". */
         fun startVoice(context: Context) {
+            updateConnectionState(context, reconnecting = false, voiceActive = true)
+        }
+
+        fun updateConnectionState(context: Context, reconnecting: Boolean, voiceActive: Boolean) {
             ContextCompat.startForegroundService(
                 context,
-                Intent(context, VoiceService::class.java).putExtra(EXTRA_VOICE_ACTIVE, true),
+                Intent(context, VoiceService::class.java)
+                    .putExtra(EXTRA_VOICE_ACTIVE, voiceActive)
+                    .putExtra(EXTRA_RECONNECTING, reconnecting),
             )
         }
 
@@ -46,6 +50,8 @@ class VoiceService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var voiceActive = false
+    private var reconnecting = false
     private val nm: NotificationManager by lazy {
         getSystemService(NotificationManager::class.java)
     }
@@ -58,8 +64,9 @@ class VoiceService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val voiceActive = intent?.getBooleanExtra(EXTRA_VOICE_ACTIVE, false) ?: false
-        val notification = buildNotification(voiceActive)
+        voiceActive = intent?.getBooleanExtra(EXTRA_VOICE_ACTIVE, voiceActive) ?: voiceActive
+        reconnecting = intent?.getBooleanExtra(EXTRA_RECONNECTING, reconnecting) ?: reconnecting
+        val notification = buildNotification(voiceActive, reconnecting)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -71,7 +78,6 @@ class VoiceService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        // Refresh notification if service was already running (mode changed).
         nm.notify(NOTIFICATION_ID, notification)
 
         if (wakeLock == null) {
@@ -93,7 +99,7 @@ class VoiceService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun buildNotification(voiceActive: Boolean): Notification {
+    private fun buildNotification(voiceActive: Boolean, reconnecting: Boolean): Notification {
         val tapIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java).apply {
@@ -101,10 +107,11 @@ class VoiceService : Service() {
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val (title, text) = if (voiceActive)
-            "Voice chat active" to "SVCGeyser is bridging your voice"
-        else
-            "Connected to SVCGeyser" to "Tap to return to the app"
+        val (title, text) = when {
+            reconnecting -> "Reconnecting…" to "Connection lost — trying to reconnect"
+            voiceActive -> "Voice chat active" to "SVCGeyser is bridging your voice"
+            else -> "Connected to SVCGeyser" to "Tap to return to the app"
+        }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)

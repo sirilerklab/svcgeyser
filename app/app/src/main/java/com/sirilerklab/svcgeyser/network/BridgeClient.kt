@@ -18,7 +18,12 @@ private const val TAG = "SVCGeyser.WS"
 sealed class InboundMessage {
     data class AuthOk(val sessionToken: String, val xuid: String) : InboundMessage()
     data class AuthFail(val reason: String) : InboundMessage()
-    data class Status(val inGame: Boolean, val javaUuid: String?, val groups: List<GroupInfo>) : InboundMessage()
+    data class Status(
+        val inGame: Boolean,
+        val javaUuid: String?,
+        val currentRoom: String?,
+        val groups: List<GroupInfo>,
+    ) : InboundMessage()
     data class PlayerJoinedGame(val javaUuid: String) : InboundMessage()
     object PlayerLeftGame : InboundMessage()
     data class GroupUpdate(val groups: List<GroupInfo>) : InboundMessage()
@@ -32,7 +37,18 @@ sealed class InboundMessage {
     object Closed : InboundMessage()
 }
 
-data class GroupInfo(val name: String, val hasPassword: Boolean)
+enum class GroupType(val wire: String, val label: String, val description: String) {
+    NORMAL("normal", "Normal", "Group voice chat; members also hear nearby players outside the group."),
+    OPEN("open", "Open", "Open group anyone can join; members also hear nearby players."),
+    ISOLATED("isolated", "Isolation", "Private group — members hear only others in this group, not proximity chat."),
+    ;
+
+    companion object {
+        fun fromWire(value: String?): GroupType = entries.find { it.wire == value?.lowercase() } ?: ISOLATED
+    }
+}
+
+data class GroupInfo(val name: String, val hasPassword: Boolean, val type: GroupType = GroupType.ISOLATED)
 
 class BridgeClient {
 
@@ -65,10 +81,11 @@ class BridgeClient {
 
     fun sendPing() = send("""{"type":"ping"}""")
 
-    fun sendJoinRoom(name: String, password: String?) {
-        Log.d(TAG, "→ join_room name=$name hasPassword=${password != null}")
+    fun sendJoinRoom(name: String, password: String?, groupType: GroupType? = null) {
+        Log.d(TAG, "→ join_room name=$name hasPassword=${password != null} groupType=$groupType")
         val pw = if (password.isNullOrBlank()) "" else ""","password":"${password.replace("\"", "\\\"")}""""
-        send("""{"type":"join_room","name":"${name.replace("\"", "\\\"")}"$pw}""")
+        val gt = if (groupType != null) ""","groupType":"${groupType.wire}""" else ""
+        send("""{"type":"join_room","name":"${name.replace("\"", "\\\"")}"$pw$gt}""")
     }
 
     fun sendLeaveRoom() {
@@ -147,9 +164,10 @@ class BridgeClient {
             )
             "auth_fail"        -> InboundMessage.AuthFail(j.optString("reason", "unknown"))
             "status"           -> InboundMessage.Status(
-                inGame   = j.getBoolean("inGame"),
-                javaUuid = if (j.has("javaUuid")) j.getString("javaUuid") else null,
-                groups   = parseGroups(j),
+                inGame      = j.getBoolean("inGame"),
+                javaUuid    = if (j.has("javaUuid")) j.getString("javaUuid") else null,
+                currentRoom = if (j.has("currentRoom") && !j.isNull("currentRoom")) j.getString("currentRoom") else null,
+                groups      = parseGroups(j),
             )
             "player_joined_game" -> InboundMessage.PlayerJoinedGame(j.getString("javaUuid"))
             "player_left_game"   -> InboundMessage.PlayerLeftGame
@@ -172,7 +190,11 @@ class BridgeClient {
         val arr = j.optJSONArray("groups") ?: return emptyList()
         return (0 until arr.length()).map { i ->
             val g = arr.getJSONObject(i)
-            GroupInfo(name = g.getString("name"), hasPassword = g.getBoolean("hasPassword"))
+            GroupInfo(
+                name = g.getString("name"),
+                hasPassword = g.getBoolean("hasPassword"),
+                type = GroupType.fromWire(g.optString("type", "isolated")),
+            )
         }
     }
 }

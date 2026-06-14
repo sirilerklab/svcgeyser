@@ -7,6 +7,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,7 +32,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -41,6 +42,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -65,7 +68,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.sirilerklab.svcgeyser.network.GroupInfo
+import com.sirilerklab.svcgeyser.network.GroupType
 import com.sirilerklab.svcgeyser.ui.viewmodel.AppViewModel
+import com.sirilerklab.svcgeyser.ui.viewmodel.ConnectStatus
+import com.sirilerklab.svcgeyser.ui.viewmodel.isOnline
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,6 +102,15 @@ fun RoomListScreen(
         }
     }
 
+    LaunchedEffect(state.showReconnected) {
+        if (state.showReconnected) {
+            snackbarHostState.showSnackbar("Reconnected")
+            vm.clearReconnected()
+        }
+    }
+
+    val isOnline = state.connectStatus.isOnline
+
     val overlayPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
@@ -106,7 +121,7 @@ fun RoomListScreen(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            if (state.inGame && state.currentRoom == null) {
+            if (state.inGame && state.currentRoom == null && isOnline) {
                 ExtendedFloatingActionButton(
                     onClick = { showCreateDialog = true },
                     icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -167,7 +182,9 @@ fun RoomListScreen(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            if (state.inGame) {
+            ConnectionBanner(connectStatus = state.connectStatus)
+
+            if (state.inGame && isOnline) {
                 AudioControlBar(
                     isMuted = state.isMuted,
                     isDeafened = state.isDeafened,
@@ -189,7 +206,7 @@ fun RoomListScreen(
                         Spacer(Modifier.height(12.dp))
                         ActiveRoomBanner(
                             roomName = state.currentRoom!!,
-                            onLeave = { vm.leaveRoom() },
+                            onLeave = { if (isOnline) vm.leaveRoom() },
                         )
                         Spacer(Modifier.height(16.dp))
                     }
@@ -220,7 +237,7 @@ fun RoomListScreen(
                         VoiceChannelRow(
                             group = group,
                             isCurrentRoom = state.currentRoom == group.name,
-                            canJoin = state.inGame && state.currentRoom == null,
+                            canJoin = state.inGame && state.currentRoom == null && isOnline,
                             onJoin = {
                                 if (group.hasPassword) passwordTarget = group
                                 else vm.joinRoom(group.name, null)
@@ -249,11 +266,45 @@ fun RoomListScreen(
     if (showCreateDialog) {
         CreateChannelDialog(
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, pw ->
-                vm.joinRoom(name, pw.ifBlank { null })
+            onCreate = { name, pw, type ->
+                vm.joinRoom(name, pw.ifBlank { null }, type)
                 showCreateDialog = false
             },
         )
+    }
+}
+
+@Composable
+private fun ConnectionBanner(connectStatus: ConnectStatus) {
+    when (connectStatus) {
+        is ConnectStatus.Reconnecting -> {
+            val seconds = (connectStatus.attemptDelayMs / 1000).coerceAtLeast(1)
+            Surface(
+                color = Color(0xFFFFF3E0),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "Connection lost — reconnecting in ${seconds}s…",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFE65100),
+                )
+            }
+        }
+        ConnectStatus.Connecting -> {
+            Surface(
+                color = Color(0xFFFFF3E0),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "Reconnecting…",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFE65100),
+                )
+            }
+        }
+        else -> Unit
     }
 }
 
@@ -295,7 +346,7 @@ private fun AudioControlBar(
             }
             IconButton(onClick = onToggleSpeaker) {
                 Icon(
-                    imageVector = if (speakerOn) Icons.Filled.VolumeUp else Icons.Filled.Headphones,
+                    imageVector = if (speakerOn) Icons.AutoMirrored.Filled.VolumeUp else Icons.Filled.Headphones,
                     contentDescription = if (speakerOn) "Switch to headphones" else "Switch to speaker",
                     tint = if (speakerOn) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -366,7 +417,7 @@ private fun VoiceChannelRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = if (group.hasPassword) Icons.Filled.Lock else Icons.Filled.VolumeUp,
+            imageVector = if (group.hasPassword) Icons.Filled.Lock else Icons.AutoMirrored.Filled.VolumeUp,
             contentDescription = null,
             tint = if (isCurrentRoom)
                 MaterialTheme.colorScheme.onSecondaryContainer
@@ -384,6 +435,12 @@ private fun VoiceChannelRow(
             else
                 MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
+        )
+        Text(
+            group.type.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(end = 8.dp),
         )
         if (isCurrentRoom) {
             TextButton(onClick = onLeave) { Text("Leave") }
@@ -427,10 +484,11 @@ private fun PasswordDialog(
 @Composable
 private fun CreateChannelDialog(
     onDismiss: () -> Unit,
-    onCreate: (name: String, password: String) -> Unit,
+    onCreate: (name: String, password: String, groupType: GroupType) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var selectedType by remember { mutableStateOf(GroupType.ISOLATED) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -453,10 +511,41 @@ private fun CreateChannelDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Text(
+                    "Group type",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                GroupType.entries.forEach { type ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedType = type }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = selectedType == type,
+                            onClick = { selectedType = type },
+                            colors = RadioButtonDefaults.colors(),
+                        )
+                        Column(modifier = Modifier.padding(start = 4.dp)) {
+                            Text(type.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                type.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(name.trim(), password) }, enabled = name.isNotBlank()) {
+            TextButton(
+                onClick = { onCreate(name.trim(), password, selectedType) },
+                enabled = name.isNotBlank(),
+            ) {
                 Text("Create")
             }
         },

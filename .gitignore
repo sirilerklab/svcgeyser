@@ -11,6 +11,10 @@ dependency-reduced-pom.xml
 
 # Android
 local.properties
+app/gradle.properties
+app/release.keystore
+*.keystore
+*.jks
 
 # IDE
 .idea/

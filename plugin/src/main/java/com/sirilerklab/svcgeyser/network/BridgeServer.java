@@ -16,6 +16,8 @@ import org.java_websocket.server.WebSocketServer;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -141,6 +143,7 @@ public class BridgeServer extends WebSocketServer {
         }
 
         String token = SessionJwt.issue(xuid, Main.getInstance().getJwtSecret());
+        kickOtherSessions(xuid, session.getConnection());
         session.setXuid(xuid);
 
         UUID javaUuid = Main.getInstance().getXuidPlayerMap().getJavaUuid(xuid);
@@ -176,8 +179,13 @@ public class BridgeServer extends WebSocketServer {
         UUID javaUuid = Main.getInstance().getXuidPlayerMap().getJavaUuid(session.getXuid());
         boolean inGame  = javaUuid != null;
         String uuidPart = inGame ? ",\"javaUuid\":\"" + javaUuid + "\"" : "";
+        String roomPart = "";
+        String room = session.getCurrentRoom();
+        if (room != null) {
+            roomPart = ",\"currentRoom\":\"" + GroupManager.escapeJson(room) + "\"";
+        }
         String groups   = api != null ? GroupManager.toJson(api.getGroups()) : "[]";
-        session.send("{\"type\":\"status\",\"inGame\":" + inGame + uuidPart + ",\"groups\":" + groups + "}");
+        session.send("{\"type\":\"status\",\"inGame\":" + inGame + uuidPart + roomPart + ",\"groups\":" + groups + "}");
     }
 
     private void handleJoinRoom(AppSession session, JsonObject msg) {
@@ -192,58 +200,75 @@ public class BridgeServer extends WebSocketServer {
             return;
         }
         String password = msg.has("password") ? msg.get("password").getAsString() : "";
-
-        VoicechatServerApi api = Main.getInstance().getVoicechatServerApi();
-        if (api == null) {
-            session.send("{\"type\":\"join_fail\",\"reason\":\"svc_unavailable\"}");
+        Group.Type groupType = parseGroupType(msg);
+        if (groupType == null) {
+            session.send("{\"type\":\"join_fail\",\"reason\":\"invalid_group_type\"}");
             return;
         }
 
-        UUID javaUuid = Main.getInstance().getXuidPlayerMap().getJavaUuid(session.getXuid());
-        if (javaUuid == null) {
-            session.send("{\"type\":\"join_fail\",\"reason\":\"not_in_game\"}");
-            return;
-        }
+        // All SVC group mutation (create/join/setGroup) and its events must run on the Bukkit
+        // main thread — doing it on the WS thread can throw (notably when *creating* a group),
+        // and an uncaught exception here would be swallowed by the WS library, leaving the app
+        // with no response. The try/catch guarantees the client always gets a reply.
+        Main.getInstance().getServer().getScheduler().runTask(Main.getInstance(), () -> {
+            try {
+                VoicechatServerApi api = Main.getInstance().getVoicechatServerApi();
+                if (api == null) {
+                    session.send("{\"type\":\"join_fail\",\"reason\":\"svc_unavailable\"}");
+                    return;
+                }
 
-        VoicechatConnection connection = api.getConnectionOf(javaUuid);
-        if (connection == null) {
-            session.send("{\"type\":\"join_fail\",\"reason\":\"no_svc_connection\"}");
-            return;
-        }
+                UUID javaUuid = Main.getInstance().getXuidPlayerMap().getJavaUuid(session.getXuid());
+                if (javaUuid == null) {
+                    session.send("{\"type\":\"join_fail\",\"reason\":\"not_in_game\"}");
+                    return;
+                }
 
-        GroupManager gm = Main.getInstance().getGroupManager();
+                VoicechatConnection connection = api.getConnectionOf(javaUuid);
+                if (connection == null) {
+                    session.send("{\"type\":\"join_fail\",\"reason\":\"no_svc_connection\"}");
+                    return;
+                }
 
-        // Find existing group by name.
-        Group existing = api.getGroups().stream()
-                .filter(g -> g.getName().equals(name))
-                .findFirst().orElse(null);
+                GroupManager gm = Main.getInstance().getGroupManager();
 
-        if (existing != null) {
-            if (!gm.checkPassword(existing, password)) {
-                log().warn("xuid={} join_room \"{}\" rejected — wrong password", session.getXuid(), name);
-                session.send("{\"type\":\"join_fail\",\"reason\":\"wrong_password\"}");
-                return;
+                // Find existing group by name.
+                Group existing = api.getGroups().stream()
+                        .filter(g -> g.getName().equals(name))
+                        .findFirst().orElse(null);
+
+                if (existing != null) {
+                    if (!gm.checkPassword(existing, password)) {
+                        log().warn("xuid={} join_room \"{}\" rejected — wrong password", session.getXuid(), name);
+                        session.send("{\"type\":\"join_fail\",\"reason\":\"wrong_password\"}");
+                        return;
+                    }
+                    connection.setGroup(existing);
+                    log().info("xuid={} joined room \"{}\"", session.getXuid(), name);
+                } else {
+                    // Create a new group with the provided password and type.
+                    String pw = (password != null && !password.isBlank()) ? password : "";
+                    Group.Builder builder = api.groupBuilder()
+                            .setName(name)
+                            .setType(groupType);
+                    if (!pw.isEmpty()) builder.setPassword(pw);
+                    Group created = builder.build();
+                    gm.track(name, pw);
+                    connection.setGroup(created);
+                    log().info("xuid={} created room \"{}\" type={} (password={})",
+                            session.getXuid(), name, groupType, !pw.isEmpty());
+                }
+
+                session.setState(AppSession.State.IN_ROOM);
+                session.setCurrentRoom(name);
+                session.send("{\"type\":\"join_ok\"}");
+                session.send("{\"type\":\"room_changed\",\"room\":\"" + GroupManager.escapeJson(name) + "\"}");
+                scheduleBroadcastGroupUpdate();
+            } catch (Exception e) {
+                log().error("join_room failed for xuid={} room=\"{}\"", session.getXuid(), name, e);
+                session.send("{\"type\":\"join_fail\",\"reason\":\"group_error\"}");
             }
-            connection.setGroup(existing);
-            log().info("xuid={} joined room \"{}\"", session.getXuid(), name);
-        } else {
-            // Create a new group with the provided password.
-            String pw = (password != null && !password.isBlank()) ? password : "";
-            Group.Builder builder = api.groupBuilder()
-                    .setName(name)
-                    .setType(Group.Type.NORMAL);
-            if (!pw.isEmpty()) builder.setPassword(pw);
-            Group created = builder.build();
-            gm.track(name, pw);
-            connection.setGroup(created);
-            log().info("xuid={} created room \"{}\" (password={})", session.getXuid(), name, !pw.isEmpty());
-        }
-
-        session.setState(AppSession.State.IN_ROOM);
-        session.setCurrentRoom(name);
-        session.send("{\"type\":\"join_ok\"}");
-        session.send("{\"type\":\"room_changed\",\"room\":\"" + GroupManager.escapeJson(name) + "\"}");
-        scheduleBroadcastGroupUpdate();
+        });
     }
 
     private void handleLeaveRoom(AppSession session) {
@@ -366,6 +391,58 @@ public class BridgeServer extends WebSocketServer {
                         }
                     }, 20L);
         }
+    }
+
+    /**
+     * Returns the AppSession bridging the given in-game player, or null if that player is
+     * not an app-bridged (Bedrock) player. Used to resolve a sender's authoritative room
+     * state from our own volatile fields instead of SVC's (possibly lagging) API.
+     */
+    public AppSession sessionForPlayer(UUID javaUuid) {
+        for (AppSession s : sessions.values()) {
+            String x = s.getXuid();
+            if (x == null) continue;
+            UUID u = Main.getInstance().getXuidPlayerMap().getJavaUuid(x);
+            if (javaUuid.equals(u)) return s;
+        }
+        return null;
+    }
+
+    /** All active app sessions (one per WebSocket connection). */
+    public Collection<AppSession> getAllSessions() {
+        return new ArrayList<>(sessions.values());
+    }
+
+    /** Find an app session by XUID, or null if not connected. */
+    public AppSession findSessionByXuid(String xuid) {
+        if (xuid == null) return null;
+        for (AppSession s : sessions.values()) {
+            if (xuid.equals(s.getXuid())) return s;
+        }
+        return null;
+    }
+
+    /** Close any other open WebSocket for the same XUID (reconnect dedup). */
+    private void kickOtherSessions(String xuid, WebSocket keepConn) {
+        for (var entry : sessions.entrySet()) {
+            WebSocket ws = entry.getKey();
+            AppSession s = entry.getValue();
+            if (ws != keepConn && xuid.equals(s.getXuid())) {
+                log().info("Closing duplicate app session for xuid={}", xuid);
+                ws.close(1000, "replaced by new connection");
+            }
+        }
+    }
+
+    /** Parse join_room groupType wire value; defaults to ISOLATED when omitted. */
+    private static Group.Type parseGroupType(JsonObject msg) {
+        if (!msg.has("groupType")) return Group.Type.ISOLATED;
+        return switch (msg.get("groupType").getAsString().toLowerCase()) {
+            case "normal"   -> Group.Type.NORMAL;
+            case "open"     -> Group.Type.OPEN;
+            case "isolated" -> Group.Type.ISOLATED;
+            default         -> null;
+        };
     }
 
     /** Clears the SVC group for the app session's player if they are currently in a room. */

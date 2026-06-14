@@ -1,5 +1,5 @@
 name: SVCGeyser
-version: 1.0-SNAPSHOT
+version: ${version}
 main: com.sirilerklab.svcgeyser.Main
 description: Simple Voice Chat + Geyser bridge
 author: SirilerkLAB
@@ -7,3 +7,12 @@ api-version: '1.21'
 softdepend:
   - floodgate
   - voicechat
+commands:
+  svc:
+    description: SVCGeyser bridge status
+    usage: /svc status [player]
+    permission: svcgeyser.status
+permissions:
+  svcgeyser.status:
+    description: View SVCGeyser bridge player status
+    default: op

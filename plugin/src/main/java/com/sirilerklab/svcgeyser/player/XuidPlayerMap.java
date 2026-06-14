@@ -3,6 +3,7 @@ package com.sirilerklab.svcgeyser.player;
 import com.sirilerklab.svcgeyser.Main;
 import org.geysermc.floodgate.api.FloodgateApi;
 
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -33,6 +34,11 @@ public class XuidPlayerMap {
 
     public String getXuid(UUID javaUuid) {
         return uuidToXuid.get(javaUuid);
+    }
+
+    /** Snapshot of all online Bedrock players (xuid → java UUID). */
+    public Map<String, UUID> snapshot() {
+        return Map.copyOf(xuidToUuid);
     }
 
     private static org.slf4j.Logger log() {
