@@ -11,7 +11,7 @@ dependency-reduced-pom.xml
 
 # Android
 local.properties
-app/gradle.properties
+app/gradle.local.properties
 app/release.keystore
 *.keystore
 *.jks

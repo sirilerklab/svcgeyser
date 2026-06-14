@@ -189,6 +189,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           LIVE_OAUTH_CLIENT_ID: ${{ secrets.LIVE_OAUTH_CLIENT_ID }}
+          GRADLE_OPTS: "-Xmx4096m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
         run: |
           ./gradlew assembleRelease \
             -PversionName=${{ needs.validate.outputs.version }} \
@@ -249,7 +250,7 @@ jobs:
             printf '%s\n\n' "6. Connect to \`ws://<server-ip>:9000\` (or your configured port)."
             printf '%s\n' "### Build locally (maintainers)"
             printf '%s\n' "- Plugin: \`cd plugin && ./gradlew shadowJar -PreleaseVersion=${VERSION}\`"
-            printf '%s\n\n' "- App: place \`Concentus.jar\` in \`app/app/libs/\`, set \`liveOAuthClientId\` in \`app/gradle.properties\`, then \`cd app && ./gradlew assembleRelease\`"
+            printf '%s\n\n' "- App: place \`Concentus.jar\` in \`app/app/libs/\`, set \`liveOAuthClientId\` in \`app/gradle.local.properties\`, then \`cd app && ./gradlew assembleRelease\`"
             printf '%s\n' "### Checksums"
             printf '%s\n' "SHA256 sums are attached as \`.sha256\` files."
           } > release-notes.md

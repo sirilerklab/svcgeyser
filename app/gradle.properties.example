@@ -1,6 +1,2 @@
-# Project-wide Gradle settings — copy to gradle.properties for local builds.
-org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
-kotlin.code.style=official
-
-# Microsoft OAuth public client ID (required for assembleRelease / local debug with auth).
+# Copy to gradle.local.properties for local builds (not committed).
 liveOAuthClientId=your-azure-app-client-id

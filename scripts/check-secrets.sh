@@ -48,9 +48,16 @@ if git ls-files 'local.properties' 'app/local.properties' | grep -q .; then
   fail "local.properties is tracked in git"
 fi
 
-# gradle.properties with secrets must stay untracked (example file is allowed).
+# gradle.local.properties with secrets must stay untracked.
+if git ls-files 'app/gradle.local.properties' | grep -q .; then
+  fail "app/gradle.local.properties is tracked in git (keep OAuth client ID local only)"
+fi
+
+# Tracked gradle.properties must not contain a real OAuth client ID.
 if git ls-files 'app/gradle.properties' | grep -q .; then
-  fail "app/gradle.properties is tracked in git (use gradle.properties.example instead)"
+  if grep -E 'liveOAuthClientId=[0-9a-f]{8}-' app/gradle.properties >/dev/null 2>&1; then
+    fail "liveOAuthClientId must not be committed in app/gradle.properties (use gradle.local.properties)"
+  fi
 fi
 
 if [ "$failures" -gt 0 ]; then

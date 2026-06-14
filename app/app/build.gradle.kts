@@ -1,6 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+fun localGradleProperty(name: String): String? {
+    val file = rootProject.file("gradle.local.properties")
+    if (!file.exists()) return null
+    val props = Properties()
+    file.inputStream().use { props.load(it) }
+    return props.getProperty(name)
 }
 
 android {
@@ -21,6 +31,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         val liveClientId = project.findProperty("liveOAuthClientId") as String?
+            ?: localGradleProperty("liveOAuthClientId")
             ?: System.getenv("LIVE_OAUTH_CLIENT_ID")
             ?: ""
         buildConfigField("String", "LIVE_OAUTH_CLIENT_ID", "\"$liveClientId\"")
