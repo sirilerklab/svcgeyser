@@ -85,6 +85,17 @@ public class Main extends JavaPlugin implements Listener {
         getSLF4JLogger().info("SVC API acquired — bridge ready");
     }
 
+    /**
+     * Re-reads config.yml from disk and refreshes the cached config values that can be
+     * applied at runtime. The WebSocket port (ws-port) is bound at startup, so a change to
+     * it only takes effect after a full server/plugin restart.
+     */
+    public void reloadPluginConfig() {
+        reloadConfig();
+        jwtSecret = getConfig().getString("jwt-secret", "change-me");
+        getSLF4JLogger().info("Configuration reloaded from config.yml");
+    }
+
     public static Main getInstance()                    { return instance; }
     public VoicechatServerApi getVoicechatServerApi()   { return voicechatServerApi; }
     public XuidPlayerMap      getXuidPlayerMap()        { return xuidPlayerMap; }
