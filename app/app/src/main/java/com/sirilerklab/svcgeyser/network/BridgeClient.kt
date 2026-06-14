@@ -1,5 +1,6 @@
 package com.sirilerklab.svcgeyser.network
 
+import android.annotation.SuppressLint
 import android.util.Log
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.trySendBlocking
@@ -10,10 +11,18 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 private const val TAG = "SVCGeyser.WS"
+
+/** Drop uplink audio frames once OkHttp's outgoing buffer exceeds this (it cancels at ~16 MiB). */
+private const val MAX_UPLINK_QUEUE_BYTES = 256L * 1024
 
 sealed class InboundMessage {
     data class AuthOk(val sessionToken: String, val xuid: String) : InboundMessage()
@@ -56,10 +65,19 @@ data class RoomMember(val uuid: String, val name: String)
 
 class BridgeClient {
 
+    // The bridge serves WSS with a self-signed certificate (no public CA), so we trust it
+    // explicitly and skip hostname verification — i.e. ignore the "insecure WebSocket
+    // certificate" warning. Transport is still TLS-encrypted; identity is established by the
+    // Xbox XSTS auth handshake over the socket, not by the certificate.
     private val http = OkHttpClient.Builder()
         .pingInterval(10, TimeUnit.SECONDS)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
+        .apply {
+            val trustManager = trustAllManager()
+            sslSocketFactory(insecureSslSocketFactory(trustManager), trustManager)
+            hostnameVerifier { _, _ -> true }
+        }
         .build()
 
     val messages: Channel<InboundMessage> = Channel(64)
@@ -67,7 +85,7 @@ class BridgeClient {
     private val socket = AtomicReference<WebSocket?>(null)
 
     fun connect(address: String, port: Int, authHeader: String) {
-        val url = "ws://$address:$port"
+        val url = "wss://$address:$port"
         Log.d(TAG, "Connecting to $url")
         val request = Request.Builder().url(url).build()
         http.newWebSocket(request, Listener(authHeader))
@@ -105,7 +123,15 @@ class BridgeClient {
     }
 
     fun sendBinary(frame: ByteArray) {
-        socket.get()?.send(ByteString.of(*frame))
+        val ws = socket.get() ?: return
+        // Backpressure: if the network can't keep up, OkHttp buffers outgoing frames and
+        // force-cancels the socket once the queue passes ~16 MiB. Dropping a voice frame is
+        // harmless; a dropped connection is not — so shed load before we get there.
+        if (ws.queueSize() > MAX_UPLINK_QUEUE_BYTES) {
+            Log.w(TAG, "Uplink queue ${ws.queueSize()}B over limit — dropping frame")
+            return
+        }
+        ws.send(ByteString.of(*frame))
     }
 
     fun close() {
@@ -220,6 +246,20 @@ class BridgeClient {
         val arr = j.optJSONArray("speaking") ?: return emptySet()
         return (0 until arr.length()).mapTo(linkedSetOf()) { arr.getString(it) }
     }
+
+    // ---- TLS (trust self-signed bridge cert) ----------------------------
+
+    @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
+    private fun trustAllManager(): X509TrustManager = object : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+        override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+    }
+
+    private fun insecureSslSocketFactory(tm: X509TrustManager) =
+        SSLContext.getInstance("TLS").apply {
+            init(null, arrayOf<TrustManager>(tm), SecureRandom())
+        }.socketFactory
 
     private fun parseGroups(j: JSONObject): List<GroupInfo> {
         val arr = j.optJSONArray("groups") ?: return emptyList()

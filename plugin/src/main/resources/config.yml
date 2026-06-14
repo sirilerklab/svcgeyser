@@ -1,2 +1,7 @@
 ws-port: 9000
-jwt-secret: "change-me-to-a-long-random-secret"
+# JWT session secret. Leave blank — on first run the plugin generates a random
+# 48-character base64 secret and writes it here, then reuses it on every later run.
+jwt-secret: ""
+# Password for the PKCS12 TLS keystore (cert.p12). Leave blank — generated on first run.
+# The self-signed certificate is exported alongside it as cert.pem / cert.key.
+keystore-password: ""
