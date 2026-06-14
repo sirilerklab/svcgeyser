@@ -1,3 +1,8 @@
+# Security: the JWT session secret lives in config.yml. On first run (key missing/blank)
+# the plugin generates a cryptographically-random 48-character base64 secret
+# (Main#loadOrCreateSessionSecret -> generateSessionSecret, 36 SecureRandom bytes => 48
+# base64 chars) and persists it to config.yml; every later run reuses that saved secret.
+# plugin.yml is static metadata Bukkit loads once, so this logic necessarily lives in code.
 name: SVCGeyser
 version: ${version}
 main: com.sirilerklab.svcgeyser.Main
@@ -9,10 +14,12 @@ softdepend:
   - voicechat
 commands:
   svc:
-    description: SVCGeyser bridge status
-    usage: /svc status [player]
-    permission: svcgeyser.status
+    description: SVCGeyser bridge status and admin
+    usage: /svc <status [player]|reload>
 permissions:
   svcgeyser.status:
     description: View SVCGeyser bridge player status
+    default: op
+  svcgeyser.reload:
+    description: Reload the SVCGeyser configuration
     default: op

@@ -12,6 +12,7 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
+import com.sirilerklab.svcgeyser.diag.CrashReporter
 import org.concentus.OpusApplication
 import org.concentus.OpusDecoder
 import org.concentus.OpusEncoder
@@ -33,13 +34,22 @@ class AudioEngine(
         private const val SPEECH_RMS_THRESHOLD = 600.0
         /** Keep sending briefly after speech ends to avoid clipped syllables. */
         private const val SPEECH_HANG_MS = 100L
+        /** Back-off between audio-device recovery attempts after a dead/invalid device. */
+        private const val RECOVERY_BACKOFF_MS = 250L
+        /** Back-off after a transient (non-fatal) error in an audio loop, to avoid busy-spin. */
+        private const val ERROR_BACKOFF_MS = 20L
     }
 
     private val encoder = OpusEncoder(SAMPLE_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP)
     private val decoder = OpusDecoder(SAMPLE_RATE, 1)
 
-    private val jitterBuffer = ArrayDeque<ShortArray>()
+    // Holds raw (undecoded) downlink frames; decoding happens on the playback thread so the
+    // main thread (which receives frames) never does Opus work — avoids jank/ANR in busy rooms.
+    private val jitterBuffer = ArrayDeque<ByteArray>()
     private val jitterLock = Any()
+
+    /** Serializes lifecycle of the native AudioRecord/AudioTrack across capture/playback threads. */
+    private val ioLock = Any()
 
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
@@ -65,27 +75,38 @@ class AudioEngine(
         requestVoiceFocus()
         applySpeakerRoute()
 
+        initAudioRecord()
+        createAndStartAudioTrack()
+
+        captureThread = Thread(::captureLoop, "svcgeyser-capture").also { it.start() }
+        playbackThread = Thread(::playbackLoop, "svcgeyser-playback").also { it.start() }
+    }
+
+    /** Creates (or recreates) the [AudioRecord] + echo canceler and starts recording. */
+    @SuppressLint("MissingPermission")
+    private fun initAudioRecord(): Boolean = synchronized(ioLock) {
+        if (!running) return false
         val minRecBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
         )
-        audioRecord = AudioRecord(
+        val ar = AudioRecord(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minRecBuf, FRAME_BYTES * 4),
-        ).also { ar ->
-            if (AcousticEchoCanceler.isAvailable()) {
-                echoCanceler = AcousticEchoCanceler.create(ar.audioSessionId)
-                    ?.also { it.enabled = true }
-            }
-            ar.startRecording()
+        )
+        if (ar.state != AudioRecord.STATE_INITIALIZED) {
+            ar.release()
+            return false
         }
-
-        createAndStartAudioTrack()
-
-        captureThread = Thread(::captureLoop, "svcgeyser-capture").also { it.start() }
-        playbackThread = Thread(::playbackLoop, "svcgeyser-playback").also { it.start() }
+        if (AcousticEchoCanceler.isAvailable()) {
+            echoCanceler = AcousticEchoCanceler.create(ar.audioSessionId)
+                ?.also { it.enabled = true }
+        }
+        ar.startRecording()
+        audioRecord = ar
+        return true
     }
 
     fun stop() {
@@ -96,14 +117,18 @@ class AudioEngine(
         playbackThread?.join(500)
         captureThread = null
         playbackThread = null
-        echoCanceler?.release()
-        echoCanceler = null
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
+        synchronized(ioLock) {
+            runCatching {
+                echoCanceler?.release()
+                echoCanceler = null
+                audioRecord?.stop()
+                audioRecord?.release()
+                audioRecord = null
+                audioTrack?.stop()
+                audioTrack?.release()
+                audioTrack = null
+            }
+        }
         abandonVoiceFocus()
         audioManager = null
         synchronized(jitterLock) { jitterBuffer.clear() }
@@ -143,7 +168,8 @@ class AudioEngine(
         }
     }
 
-    private fun createAndStartAudioTrack() {
+    private fun createAndStartAudioTrack() = synchronized(ioLock) {
+        if (!running) return@synchronized
         val minPlayBuf = AudioTrack.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
         )
@@ -219,14 +245,34 @@ class AudioEngine(
         val pcm = ShortArray(FRAME_SAMPLES)
         val encodeBuf = ByteArray(1275) // RFC 6716 §3.1 max single frame
         while (running && !Thread.currentThread().isInterrupted) {
-            val read = audioRecord?.read(pcm, 0, FRAME_SAMPLES) ?: break
-            if (read < FRAME_SAMPLES) continue
-            if (isMuted) continue
-            if (!shouldUplink(pcm)) continue
+            // Catch Throwable (not just Exception) so OutOfMemoryError or a bad-state native
+            // call can never escape and kill the whole process ("app closed instantly").
             try {
-                val len = encoder.encode(pcm, 0, FRAME_SAMPLES, encodeBuf, 0, encodeBuf.size)
-                if (len > 0) onUplinkFrame(buildUplinkFrame(encodeBuf, len))
-            } catch (_: Exception) { /* skip malformed frame */ }
+                val record = audioRecord
+                if (record == null) {
+                    if (!recoverRecord()) break
+                    continue
+                }
+                val read = record.read(pcm, 0, FRAME_SAMPLES)
+                when {
+                    read == FRAME_SAMPLES -> {
+                        if (isMuted) continue
+                        if (!shouldUplink(pcm)) continue
+                        val len = encoder.encode(pcm, 0, FRAME_SAMPLES, encodeBuf, 0, encodeBuf.size)
+                        if (len > 0) onUplinkFrame(buildUplinkFrame(encodeBuf, len))
+                    }
+                    read == AudioRecord.ERROR_DEAD_OBJECT ||
+                        read == AudioRecord.ERROR_INVALID_OPERATION -> {
+                        // Audio HAL/server died (common after long sessions / route changes).
+                        if (!recoverRecord()) break
+                    }
+                    read < 0 -> sleepQuietly(ERROR_BACKOFF_MS) // transient error code
+                    else -> { /* short read (0 .. <FRAME) — drop partial frame */ }
+                }
+            } catch (t: Throwable) {
+                CrashReporter.logNonFatal(context, "captureLoop", t)
+                sleepQuietly(ERROR_BACKOFF_MS)
+            }
         }
     }
 
@@ -250,23 +296,86 @@ class AudioEngine(
 
     private fun playbackLoop() {
         val silence = ShortArray(FRAME_SAMPLES)
+        val decoded = ShortArray(FRAME_SAMPLES) // reused; written out before the next decode
         while (running && !Thread.currentThread().isInterrupted) {
-            val frame = if (isDeafened) {
-                null
-            } else {
-                synchronized(jitterLock) {
-                    if (jitterBuffer.isEmpty()) null else jitterBuffer.removeFirst()
+            try {
+                val track = audioTrack
+                if (track == null) {
+                    if (!recoverTrack()) break
+                    continue
                 }
+                val raw = if (isDeafened) {
+                    null
+                } else {
+                    synchronized(jitterLock) {
+                        if (jitterBuffer.isEmpty()) null else jitterBuffer.removeFirst()
+                    }
+                }
+                val frame = if (raw != null) decodeFrame(raw, decoded) else null
+                // MODE_STREAM write blocks until the buffer drains, pacing this loop to real time.
+                val written = track.write(frame ?: silence, 0, FRAME_SAMPLES)
+                when {
+                    written >= 0 -> { /* ok */ }
+                    written == AudioTrack.ERROR_DEAD_OBJECT ||
+                        written == AudioTrack.ERROR_INVALID_OPERATION -> {
+                        if (!recoverTrack()) break
+                    }
+                    else -> sleepQuietly(ERROR_BACKOFF_MS) // transient error — avoid busy-spin
+                }
+            } catch (t: Throwable) {
+                CrashReporter.logNonFatal(context, "playbackLoop", t)
+                sleepQuietly(ERROR_BACKOFF_MS)
             }
-            audioTrack?.write(frame ?: silence, 0, FRAME_SAMPLES)
         }
     }
 
+    /** Releases and recreates the dead [AudioRecord]; returns false if shutting down or failed. */
+    private fun recoverRecord(): Boolean {
+        synchronized(ioLock) {
+            if (!running) return false
+            runCatching {
+                echoCanceler?.release(); echoCanceler = null
+                audioRecord?.release(); audioRecord = null
+            }
+        }
+        sleepQuietly(RECOVERY_BACKOFF_MS)
+        if (!running) return false
+        return runCatching { initAudioRecord() }
+            .onFailure { CrashReporter.logNonFatal(context, "recoverRecord", it) }
+            .getOrDefault(false)
+    }
+
+    /** Releases and recreates the dead [AudioTrack]; returns false if shutting down or failed. */
+    private fun recoverTrack(): Boolean {
+        synchronized(ioLock) {
+            if (!running) return false
+            runCatching {
+                audioTrack?.stop(); audioTrack?.release(); audioTrack = null
+            }
+        }
+        sleepQuietly(RECOVERY_BACKOFF_MS)
+        if (!running) return false
+        return runCatching {
+            createAndStartAudioTrack()
+            audioTrack != null
+        }.onFailure { CrashReporter.logNonFatal(context, "recoverTrack", it) }
+            .getOrDefault(false)
+    }
+
+    private fun sleepQuietly(ms: Long) {
+        try {
+            Thread.sleep(ms)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    /** Called from the network/main thread: validate cheaply and enqueue; decode happens later. */
     fun handleDownlinkFrame(bytes: ByteArray) {
         if (isDeafened) return
-        val pcm = decodeDownlink(bytes) ?: return
+        if (opusStartOf(bytes) == null) return
         synchronized(jitterLock) {
-            if (jitterBuffer.size < MAX_JITTER_FRAMES) jitterBuffer.addLast(pcm)
+            if (jitterBuffer.size < MAX_JITTER_FRAMES) jitterBuffer.addLast(bytes)
         }
     }
 
@@ -280,15 +389,20 @@ class AudioEngine(
         }
     }
 
-    private fun decodeDownlink(bytes: ByteArray): ShortArray? {
+    /** Returns the offset where the Opus payload begins, or null if the frame is malformed. */
+    private fun opusStartOf(bytes: ByteArray): Int? {
         if (bytes.size < 18 || bytes[0] != 0x02.toByte()) return null
         val flags = bytes[17].toInt() and 0xFF
         val opusStart = if (flags and 0x04 != 0) 34 else 18
-        if (bytes.size <= opusStart) return null
-        val pcm = ShortArray(FRAME_SAMPLES)
+        return if (bytes.size <= opusStart) null else opusStart
+    }
+
+    /** Decodes a raw downlink frame into [out] (reused); returns [out] on success, null otherwise. */
+    private fun decodeFrame(bytes: ByteArray, out: ShortArray): ShortArray? {
+        val opusStart = opusStartOf(bytes) ?: return null
         return try {
-            decoder.decode(bytes, opusStart, bytes.size - opusStart, pcm, 0, FRAME_SAMPLES, false)
-            pcm
+            decoder.decode(bytes, opusStart, bytes.size - opusStart, out, 0, FRAME_SAMPLES, false)
+            out
         } catch (_: Exception) { null }
     }
 }
