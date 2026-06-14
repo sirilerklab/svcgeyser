@@ -14,6 +14,7 @@ import com.sirilerklab.svcgeyser.auth.XboxAuthHelper
 import com.sirilerklab.svcgeyser.auth.XboxSession
 import com.sirilerklab.svcgeyser.data.SavedServer
 import com.sirilerklab.svcgeyser.data.ServerRepository
+import com.sirilerklab.svcgeyser.diag.CrashReporter
 import com.sirilerklab.svcgeyser.network.BridgeClient
 import com.sirilerklab.svcgeyser.network.GroupInfo
 import com.sirilerklab.svcgeyser.network.GroupType
@@ -70,6 +71,7 @@ data class AppUiState(
     val isDeafened: Boolean = false,
     val speakerOn: Boolean = false,
     val showReconnected: Boolean = false,
+    val lastCrash: String? = null,
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -124,7 +126,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         BubbleController.onToggleSpeaker = { toggleSpeaker() }
         BubbleController.onClearJoinError = { clearJoinError() }
 
+        // Surface a crash captured on the previous run (no adb/logcat needed).
+        CrashReporter.consumeLastCrash(ctx)?.let {
+            _ui.value = _ui.value.copy(lastCrash = it)
+        }
+
         restoreSession()
+    }
+
+    fun clearLastCrash() {
+        _ui.value = _ui.value.copy(lastCrash = null)
     }
 
     val isLoggedIn: Boolean get() = _ui.value.xboxSession != null

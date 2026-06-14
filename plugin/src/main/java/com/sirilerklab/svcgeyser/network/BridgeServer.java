@@ -12,8 +12,10 @@ import de.maxhenkel.voicechat.api.VoicechatConnection;
 import de.maxhenkel.voicechat.api.VoicechatServerApi;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.DefaultSSLWebSocketServerFactory;
 import org.java_websocket.server.WebSocketServer;
 
+import javax.net.ssl.SSLContext;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -46,6 +48,11 @@ public class BridgeServer extends WebSocketServer {
         super(new InetSocketAddress(port));
         setReuseAddr(true);
         idleChecker.scheduleAtFixedRate(this::checkIdle, 100, 100, TimeUnit.MILLISECONDS);
+    }
+
+    /** Enables TLS (WSS) on this server. Must be called before {@link #start()}. */
+    public void enableSsl(SSLContext sslContext) {
+        setWebSocketFactory(new DefaultSSLWebSocketServerFactory(sslContext));
     }
 
     // ---- WebSocketServer callbacks ---------------------------------------
