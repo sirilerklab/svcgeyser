@@ -25,6 +25,44 @@ Audio format (fixed by SVC): **Opus, 48 kHz mono, 20 ms frames** (960 samples pe
 
 ---
 
+## Features
+
+### Voice (via Simple Voice Chat)
+
+| Feature | Details |
+|---------|---------|
+| **Proximity chat** | Hear nearby Java and Bedrock players based on in-game distance |
+| **Voice groups** | Join or create SVC channels from the app — **Normal**, **Open**, or **Isolated** (default) |
+| **Password-protected groups** | Join locked channels with a password; wrong passwords are rejected |
+| **Whisper & spatial audio** | Whisper and 3D positional audio from Java players are forwarded to the app |
+| **Cross-platform** | Bedrock (app) and Java (SVC mod) players talk in the same world |
+| **Group isolation** | Isolated channels block outside proximity audio; Bedrock downlink is filtered by room |
+
+### Android app
+
+| Feature | Details |
+|---------|---------|
+| **Microsoft sign-in** | One-time Xbox account login; session saved until refresh token expires |
+| **Saved servers** | Store server IP, port, and label; tap to connect or use **Quick connect** |
+| **Auto-reconnect** | Exponential backoff (1 s → 30 s); rejoins your voice channel after reconnect |
+| **Mute / deafen / speaker** | Control bar on the room screen; switch between earpiece and speaker |
+| **Voice activity detection** | Uplink sends audio only when you speak (with a short hang time so words aren't clipped) |
+| **In-channel roster** | See who is in your channel and who is currently speaking |
+| **Floating bubble overlay** | Optional in-game overlay to join, leave, create channels, and control audio without leaving Minecraft |
+| **Foreground voice service** | Keeps the mic bridge running while you play; shows connection status in the notification |
+
+### Server plugin
+
+| Feature | Details |
+|---------|---------|
+| **XUID authentication** | App proves identity with an Xbox token; Floodgate links XUID to the in-game Bedrock player |
+| **WebSocket bridge** | JSON signaling + Opus binary frames over `ws://` (default port `9000`) |
+| **Live group sync** | Channel list updates when Java players create, join, or leave SVC groups |
+| **Auto JWT secret** | Generates a secure `jwt-secret` on first run if none is configured |
+| **`/svc status`** | Operator command to inspect app sessions, voice state, and audio sender/listener status |
+
+---
+
 ## Requirements
 
 | Component | Notes |

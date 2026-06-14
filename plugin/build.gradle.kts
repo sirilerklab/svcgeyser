@@ -26,6 +26,9 @@ dependencies {
     implementation("org.java-websocket:Java-WebSocket:1.5.7") {
         exclude(group = "org.slf4j", module = "slf4j-api")
     }
+    // Self-signed certificate generation for the WSS (TLS) bridge endpoint.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 }
 
 tasks.processResources {
@@ -36,6 +39,9 @@ tasks.processResources {
 
 tasks.shadowJar {
     relocate("org.java_websocket", "com.sirilerklab.svcgeyser.libs.ws")
+    relocate("org.bouncycastle", "com.sirilerklab.svcgeyser.libs.bc")
+    // BouncyCastle jars are signed; their signature files break the merged fat jar.
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
     archiveClassifier = ""
 }
 
