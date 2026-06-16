@@ -223,6 +223,13 @@ class BridgeClient {
             "join_ok"            -> InboundMessage.JoinOk
             "join_fail"          -> InboundMessage.JoinFail(j.optString("reason", "unknown"))
             "leave_ok"           -> InboundMessage.LeaveOk
+            "uplink_rejected"    -> {
+                // Server declined to inject our mic audio (e.g. it sees a real SVC mod on this
+                // account). Our uplink frames will be ignored — log it instead of silently
+                // treating it as an unknown message.
+                Log.w(TAG, "Uplink rejected by server: ${j.optString("reason", "unknown")}")
+                InboundMessage.Pong
+            }
             "pong"               -> InboundMessage.Pong
             else -> {
                 Log.w(TAG, "Unknown message type: ${j.optString("type")}")

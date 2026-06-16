@@ -143,6 +143,20 @@ public class AppSession {
             return false;
         }
 
+        boolean installed = connection.isInstalled();
+        log().info("registerSender — xuid={} uuid={} installed={} connected(before)={}",
+                xuid, playerUuid, installed, connection.isConnected());
+
+        // A Bedrock/Floodgate player can never have the SVC mod. If a previous session left
+        // the connection marked connected(true) (e.g. after an app reconnect — it is only
+        // cleared on unregister/quit), SVC can report canSend()==false because it treats a
+        // "connected" player as mod-like. That previously made us reject uplink permanently,
+        // killing P2→P1 audio for the rest of the session. Clear the stale state first so
+        // canSend() reflects a clean mod-less connection.
+        if (!installed) {
+            connection.setConnected(false);
+        }
+
         // Create and register the AudioSender BEFORE calling setConnected(true).
         // Calling setConnected(true) first can make SVC treat the player as "mod-connected",
         // causing canSend() to return false and silently dropping all uplink audio.
@@ -152,23 +166,33 @@ public class AppSession {
             return false;
         }
 
-        if (!sender.canSend()) {
-            // Player has the real SVC mod installed — they handle their own uplink.
+        boolean canSend = sender.canSend();
+        log().info("registerSender — xuid={} uuid={} canSend={}", xuid, playerUuid, canSend);
+
+        if (!canSend) {
             api.unregisterAudioSender(sender);
-            log().info("Uplink rejected — xuid={} uuid={}: SVC mod installed, using mod audio path", xuid, playerUuid);
-            send("{\"type\":\"uplink_rejected\",\"reason\":\"mod_installed\"}");
-            return true; // intentional — no retry needed
+            if (installed) {
+                // Genuine Java SVC-mod player — they handle their own uplink. No retry needed.
+                log().info("Uplink rejected — xuid={} uuid={}: SVC mod installed, using mod audio path", xuid, playerUuid);
+                send("{\"type\":\"uplink_rejected\",\"reason\":\"mod_installed\"}");
+                return true;
+            }
+            // Mod-less (Bedrock) player but canSend()==false — transient/stale SVC state.
+            // Do NOT give up permanently; signal the caller to retry.
+            log().warn("registerSender — canSend()==false for mod-less xuid={} uuid={}; will retry", xuid, playerUuid);
+            return false;
         }
 
         // Mark connected only after confirming we are the audio sender, so SVC includes
-        // this Bedrock player in proximity routing calculations.
-        if (!connection.isInstalled()) {
+        // this Bedrock player in proximity/group routing calculations.
+        if (!installed) {
             connection.setConnected(true);
             log().info("registerSender — setConnected(true) for Bedrock xuid={} uuid={}", xuid, playerUuid);
         }
 
         vcConnection = connection;
         audioSender  = sender;
+        sendFailures = 0;
         lastUplinkMs = System.currentTimeMillis();
         log().info("Audio sender registered — xuid={} uuid={}", xuid, playerUuid);
         return true;
@@ -193,7 +217,15 @@ public class AppSession {
         lastUplinkMs = System.currentTimeMillis();
         AudioSender sender = audioSender;
         if (sender != null) {
-            sender.send(opus);
+            // send() returns false when SVC did not route the injected audio. Surface it —
+            // a steady stream of ok=false is the signature of the P2→P1 uplink failure.
+            boolean ok = sender.send(opus);
+            logSendResult(ok);
+            if (ok) {
+                sendFailures = 0;
+            } else {
+                onSendFailed();
+            }
             String xuid = this.xuid;
             if (xuid != null) {
                 UUID javaUuid = Main.getInstance().getXuidPlayerMap().getJavaUuid(xuid);
@@ -209,6 +241,48 @@ public class AppSession {
         }
     }
     private final java.util.concurrent.atomic.AtomicBoolean uplinkWarnLogged = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** Diagnostic: log uplink injection state ~once per second (positive and negative). */
+    private void logSendResult(boolean ok) {
+        long now = System.currentTimeMillis();
+        if (now - lastSendLogMs < SEND_LOG_INTERVAL_MS) return;
+        lastSendLogMs = now;
+        VoicechatConnection c = vcConnection;
+        String group   = (c != null && c.getGroup() != null) ? c.getGroup().getName() : "none";
+        boolean connected = c != null && c.isConnected();
+        log().info("Uplink send xuid={} ok={} connected={} group={}", xuid, ok, connected, group);
+    }
+
+    /**
+     * Called on the WS thread when {@code sender.send()} returns false. After a short burst of
+     * failures, re-asserts connection state and re-registers the sender (on the Bukkit main
+     * thread). Rate-limited so a genuinely mod-installed player is not re-registered in a loop.
+     */
+    private void onSendFailed() {
+        int fails = ++sendFailures;
+        long now = System.currentTimeMillis();
+        if (fails < RECOVERY_FAIL_THRESHOLD || now - lastRecoveryMs < RECOVERY_BACKOFF_MS) return;
+        lastRecoveryMs = now;
+        sendFailures = 0;
+        String x = this.xuid;
+        if (x == null) return;
+        UUID javaUuid = Main.getInstance().getXuidPlayerMap().getJavaUuid(x);
+        if (javaUuid == null) return;
+        log().warn("Uplink send() failing for xuid={} — re-registering audio sender", x);
+        Main.getInstance().getServer().getScheduler().runTask(Main.getInstance(), () -> {
+            State st = state;
+            if (st != State.IN_GAME && st != State.IN_ROOM) return;
+            unregisterSender();
+            registerSender(javaUuid);
+        });
+    }
+
+    private static final long SEND_LOG_INTERVAL_MS  = 1000;
+    private static final int  RECOVERY_FAIL_THRESHOLD = 10;    // ~200 ms of failed 20 ms frames
+    private static final long RECOVERY_BACKOFF_MS    = 3000;   // don't thrash re-registration
+    private volatile int  sendFailures;
+    private volatile long lastRecoveryMs;
+    private volatile long lastSendLogMs;
 
     /** Called by the idle-checker thread ~every 100 ms. Resets the sender if no frame arrived recently. */
     public void resetSenderIfIdle(long now, long thresholdMs) {
