@@ -5,11 +5,14 @@
   <p align="center"><b>"Let Bedrock players join the conversation with Java players."</b></p>
 </p>
 
+<p align="center">
+  <img src="docs/images/hero-banner.webp" alt="SVCGeyser — Bedrock and Java players in voice chat" width="800">
+</p>
+
 SVCGeyser bridges Minecraft Bedrock Edition players into Simple Voice Chat on your Minecraft server — so Bedrock and Java players can hear each other in the same world, with proximity chat, voice groups, and whisper support.
 
 **Latest release:** [GitHub Releases](https://github.com/sirilerklab/svcgeyser/releases/latest) — download the plugin JAR and Android APK from the latest release.
 
-![SVCGeyser showcase — Bedrock and Java players in voice chat](docs/images/showcase.webp)
 
 ---
 
