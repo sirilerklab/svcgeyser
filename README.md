@@ -1,6 +1,11 @@
-# SVCGeyser
 
-Bedrock voice-chat bridge for **PaperMC** servers running **GeyserMC**, **Floodgate**, and **Simple Voice Chat (SVC)** — with **WSS (TLS)** encryption between the Android app and server.
+<p align="center">
+  <img src="docs/images/logo.webp" alt="SVCGeyser logo" width="160">
+  <h1 align="center">SVCGeyser</h1>
+  <p align="center"><b>"Let Bedrock players join the conversation with Java players."</b></p>
+</p>
+
+SVCGeyser bridges Minecraft Bedrock Edition players into Simple Voice Chat on your Minecraft server — so Bedrock and Java players can hear each other in the same world, with proximity chat, voice groups, and whisper support.
 
 **Latest release:** [GitHub Releases](https://github.com/sirilerklab/svcgeyser/releases/latest) — download the plugin JAR and Android APK from the latest release.
 
